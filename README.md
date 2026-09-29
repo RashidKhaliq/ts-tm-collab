@@ -116,16 +116,22 @@ When **Store A** sells a product that Store A owns:
    # PostgreSQL Database (Optional - persistent JSON fallback used if omitted)
    DATABASE_URL="postgresql://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres"
 
-   # Store A Configuration
-   STORE_A_URL="rashidstore.myshopify.com"
+   # Store A Configuration (Production)
+   STORE_A_NAME="Thrift Shop"
+   STORE_A_URL="store-a.myshopify.com"
    STORE_A_ACCESS_TOKEN="shpat_xxxxxxxxxxxxxxxx"
-   STORE_A_OWNER_EMAIL="rashid@example.com"
+   STORE_A_OWNER_EMAIL="owner-a@example.com"
+   STORE_A_SUPPLIER_NAME="ZIA"
+   STORE_A_SOLDBY_TAG="Soldby-ZIA"
    STORE_A_WEBHOOK_SECRET="shpss_aaaaaaaaaaaaaaaa"
 
-   # Store B Configuration
-   STORE_B_URL="hamzastore.myshopify.com"
+   # Store B Configuration (Production)
+   STORE_B_NAME="Thrift Mall"
+   STORE_B_URL="store-b.myshopify.com"
    STORE_B_ACCESS_TOKEN="shpat_yyyyyyyyyyyyyyyy"
-   STORE_B_OWNER_EMAIL="hamza@example.com"
+   STORE_B_OWNER_EMAIL="owner-b@example.com"
+   STORE_B_SUPPLIER_NAME="SALAM"
+   STORE_B_SOLDBY_TAG="Soldby-SALAM"
    STORE_B_WEBHOOK_SECRET="shpss_bbbbbbbbbbbbbbbb"
    ```
 

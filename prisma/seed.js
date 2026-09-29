@@ -19,20 +19,20 @@ async function main() {
   const storesToSeed = [
     {
       key: 'STORE_A',
-      name: process.env.STORE_A_NAME || 'Sharry Store (OTS)',
+      name: process.env.STORE_A_NAME || 'Store A',
       url: process.env.STORE_A_URL,
       token: process.env.STORE_A_ACCESS_TOKEN || '',
-      email: process.env.STORE_A_OWNER_EMAIL || 'rashidkhaliq88@gmail.com',
-      supplier: process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Sharry' : 'Sharry',
+      email: process.env.STORE_A_OWNER_EMAIL || '',
+      supplier: process.env.STORE_A_SUPPLIER_NAME || (process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store A' : 'Store A'),
       secret: process.env.STORE_A_WEBHOOK_SECRET || null,
     },
     {
       key: 'STORE_B',
-      name: process.env.STORE_B_NAME || 'Hamza Store (Vougewing)',
+      name: process.env.STORE_B_NAME || 'Store B',
       url: process.env.STORE_B_URL,
       token: process.env.STORE_B_ACCESS_TOKEN || '',
-      email: process.env.STORE_B_OWNER_EMAIL || 'Hamzatvc@gmail.com',
-      supplier: process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Hamza' : 'Hamza',
+      email: process.env.STORE_B_OWNER_EMAIL || '',
+      supplier: process.env.STORE_B_SUPPLIER_NAME || (process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store B' : 'Store B'),
       secret: process.env.STORE_B_WEBHOOK_SECRET || null,
     },
     {
@@ -41,7 +41,7 @@ async function main() {
       url: process.env.STORE_C_URL,
       token: process.env.STORE_C_ACCESS_TOKEN || '',
       email: process.env.STORE_C_OWNER_EMAIL || '',
-      supplier: process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C',
+      supplier: process.env.STORE_C_SUPPLIER_NAME || (process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C'),
       secret: process.env.STORE_C_WEBHOOK_SECRET || null,
     },
   ];

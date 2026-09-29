@@ -91,14 +91,14 @@ class InMemoryDatabase {
     // Store A
     if (process.env.STORE_A_URL) {
       const domainA = process.env.STORE_A_URL.replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
-      const nameA = process.env.STORE_A_NAME || 'Sharry Store (OTS)';
-      const supplierA = process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Sharry' : 'Sharry';
+      const nameA = process.env.STORE_A_NAME || 'Store A';
+      const supplierA = process.env.STORE_A_SUPPLIER_NAME || (process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store A' : 'Store A');
       this.stores.set(domainA, {
         id: 'store_a',
         shopDomain: domainA,
         name: nameA,
         accessToken: process.env.STORE_A_ACCESS_TOKEN || '',
-        ownerEmail: process.env.STORE_A_OWNER_EMAIL || 'rashidkhaliq88@gmail.com',
+        ownerEmail: process.env.STORE_A_OWNER_EMAIL || '',
         supplierName: supplierA,
         webhookSecret: process.env.STORE_A_WEBHOOK_SECRET || null,
         isActive: true,
@@ -110,14 +110,14 @@ class InMemoryDatabase {
     // Store B
     if (process.env.STORE_B_URL) {
       const domainB = process.env.STORE_B_URL.replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
-      const nameB = process.env.STORE_B_NAME || 'Hamza Store (Vougewing)';
-      const supplierB = process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Hamza' : 'Hamza';
+      const nameB = process.env.STORE_B_NAME || 'Store B';
+      const supplierB = process.env.STORE_B_SUPPLIER_NAME || (process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store B' : 'Store B');
       this.stores.set(domainB, {
         id: 'store_b',
         shopDomain: domainB,
         name: nameB,
         accessToken: process.env.STORE_B_ACCESS_TOKEN || '',
-        ownerEmail: process.env.STORE_B_OWNER_EMAIL || 'Hamzatvc@gmail.com',
+        ownerEmail: process.env.STORE_B_OWNER_EMAIL || '',
         supplierName: supplierB,
         webhookSecret: process.env.STORE_B_WEBHOOK_SECRET || null,
         isActive: true,
@@ -130,7 +130,7 @@ class InMemoryDatabase {
     if (process.env.STORE_C_URL) {
       const domainC = process.env.STORE_C_URL.replace(/^https?:\/\//, '').replace(/\/$/, '').trim();
       const nameC = process.env.STORE_C_NAME || 'Store C';
-      const supplierC = process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C';
+      const supplierC = process.env.STORE_C_SUPPLIER_NAME || (process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C');
       this.stores.set(domainC, {
         id: 'store_c',
         shopDomain: domainC,
@@ -153,19 +153,19 @@ class InMemoryDatabase {
         {
           key: 'store_a',
           url: process.env.STORE_A_URL,
-          name: process.env.STORE_A_NAME || 'Sharry Store (OTS)',
+          name: process.env.STORE_A_NAME || 'Store A',
           token: process.env.STORE_A_ACCESS_TOKEN || '',
-          email: process.env.STORE_A_OWNER_EMAIL || 'rashidkhaliq88@gmail.com',
-          supplier: process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Sharry' : 'Sharry',
+          email: process.env.STORE_A_OWNER_EMAIL || '',
+          supplier: process.env.STORE_A_SUPPLIER_NAME || (process.env.STORE_A_NAME ? process.env.STORE_A_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store A' : 'Store A'),
           secret: process.env.STORE_A_WEBHOOK_SECRET || null,
         },
         {
           key: 'store_b',
           url: process.env.STORE_B_URL,
-          name: process.env.STORE_B_NAME || 'Hamza Store (Vougewing)',
+          name: process.env.STORE_B_NAME || 'Store B',
           token: process.env.STORE_B_ACCESS_TOKEN || '',
-          email: process.env.STORE_B_OWNER_EMAIL || 'Hamzatvc@gmail.com',
-          supplier: process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Hamza' : 'Hamza',
+          email: process.env.STORE_B_OWNER_EMAIL || '',
+          supplier: process.env.STORE_B_SUPPLIER_NAME || (process.env.STORE_B_NAME ? process.env.STORE_B_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store B' : 'Store B'),
           secret: process.env.STORE_B_WEBHOOK_SECRET || null,
         },
         {
@@ -174,7 +174,7 @@ class InMemoryDatabase {
           name: process.env.STORE_C_NAME || 'Store C',
           token: process.env.STORE_C_ACCESS_TOKEN || '',
           email: process.env.STORE_C_OWNER_EMAIL || '',
-          supplier: process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C',
+          supplier: process.env.STORE_C_SUPPLIER_NAME || (process.env.STORE_C_NAME ? process.env.STORE_C_NAME.replace(/store|\(|\)/gi, '').trim() || 'Store C' : 'Store C'),
           secret: process.env.STORE_C_WEBHOOK_SECRET || null,
         },
       ];
