@@ -51,6 +51,12 @@ curl -X POST http://localhost:3000/api/worker/run -H 'X-Worker-Secret: YOUR_WORK
 4. Configure scheduler: POST `https://YOUR-APP.vercel.app/api/worker/run` with `X-Worker-Secret` header. The scheduler credential must never be included in browser scripts.
 5. Review `Webhooks`, `Sales`, and `Audit` tabs. When cancellation occurs, verify owner fulfillment/courier state and customer/order outcome before admin restores inventory. The current restoration UI does not automatically cancel the supplier-side order.
 
+## Vercel: "No Next.js version detected" fix
+
+This package is **Express**, not Next.js. In Vercel Project Settings > Build and Deployment, select Framework Preset **Other** (not Next.js). The `vercel.json` in this release also declares `"framework": null` to override Next.js detection. Disable a `next build` override; select the folder containing this package's `package.json` as Root Directory (usually `./`, or `ThriftSync-Vercel-Fix` if the repository has an enclosing directory). Commit and redeploy.
+
+Do not add `next` merely to satisfy Vercel's framework check. Successful compilation does not mean the database, worker schedule, or Shopify API credentials have been configured.
+
 ## Deployment to Vercel
 
 1. Create PostgreSQL and execute `npm run db:setup` from a machine with connection access.
