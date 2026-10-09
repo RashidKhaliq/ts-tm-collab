@@ -1,0 +1,5 @@
+import test from 'node:test';import assert from 'node:assert/strict';import crypto from 'node:crypto';
+import {verifyWebhook,numericGid,encrypt,decrypt,validDomain} from '../src/security.js';
+test('signed webhooks validated on original bytes',()=>{const raw=Buffer.from('{"id":100}');const mac=crypto.createHmac('sha256','secret').update(raw).digest('base64');assert.equal(verifyWebhook(raw,'secret',mac),true);assert.equal(verifyWebhook(raw,'wrong',mac),false);assert.equal(verifyWebhook(Buffer.from('{"id":101}'),'secret',mac),false)});
+test('Shopify ID and domain validation',()=>{assert.equal(numericGid('Product','123'),'gid://shopify/Product/123');assert.throws(()=>numericGid('Product','bad'));assert.equal(validDomain('store.myshopify.com'),true);assert.equal(validDomain('evil.com'),false)});
+test('secrets encrypted at rest',()=>{process.env.STORE_ENCRYPTION_KEY='a'.repeat(64);const value=encrypt('shpat_test');assert.notEqual(value,'shpat_test');assert.equal(decrypt(value),'shpat_test')});
