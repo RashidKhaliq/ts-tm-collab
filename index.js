@@ -58,6 +58,7 @@ function getShopifyConfig() {
       url: process.env.STORE_A_URL,
       token: process.env.STORE_A_ACCESS_TOKEN,
       ownerEmail: process.env.STORE_A_OWNER_EMAIL,
+      supplierName: process.env.STORE_A_SUPPLIER_NAME || "ZIA",
       webhookSecret: process.env.STORE_A_WEBHOOK_SECRET,
       address: { 
         first_name: "Rashid", 
@@ -74,6 +75,7 @@ function getShopifyConfig() {
       url: process.env.STORE_B_URL,
       token: process.env.STORE_B_ACCESS_TOKEN,
       ownerEmail: process.env.STORE_B_OWNER_EMAIL,
+      supplierName: process.env.STORE_B_SUPPLIER_NAME || "HAMZA",
       webhookSecret: process.env.STORE_B_WEBHOOK_SECRET,
       address: { 
         first_name: "Hamza", 
@@ -90,6 +92,7 @@ function getShopifyConfig() {
       url: process.env.STORE_C_URL,
       token: process.env.STORE_C_ACCESS_TOKEN,
       ownerEmail: process.env.STORE_C_OWNER_EMAIL,
+      supplierName: process.env.STORE_C_SUPPLIER_NAME || "Store C",
       webhookSecret: process.env.STORE_C_WEBHOOK_SECRET,
       address: { 
         first_name: "Store", 
@@ -362,6 +365,8 @@ app.post('/api/test-sync', async (req, res) => {
 
 // --- WEBHOOKS ---
 
+// --- WEBHOOKS ---
+
 // 1. Order Created on RASHID'S STORE (Store A)
 app.post('/webhooks/store-a/orders/create', async (req, res) => {
   const config = getShopifyConfig();
@@ -380,7 +385,7 @@ app.post('/webhooks/store-a/orders/create', async (req, res) => {
     }
 
     log('INFO', `📦 Webhook Hit: Store A Order Created (${req.body?.name || 'unknown'}, ID: ${req.body?.id})`);
-    await processDropship(req.body, config.STORE_A, config.STORE_B, 'Supplier: Hamza');
+    await processDropship(req.body, config.STORE_A);
     res.status(200).send('Processed');
   } catch (e) {
     log('ERROR', `Store A webhook handler error: ${e.message}`);
@@ -406,7 +411,7 @@ app.post('/webhooks/store-b/orders/create', async (req, res) => {
     }
 
     log('INFO', `📦 Webhook Hit: Store B Order Created (${req.body?.name || 'unknown'}, ID: ${req.body?.id})`);
-    await processDropship(req.body, config.STORE_B, config.STORE_A, 'Supplier: Rashid');
+    await processDropship(req.body, config.STORE_B);
     res.status(200).send('Processed');
   } catch (e) {
     log('ERROR', `Store B webhook handler error: ${e.message}`);
@@ -416,175 +421,57 @@ app.post('/webhooks/store-b/orders/create', async (req, res) => {
 
 // --- CORE DROPSHIP ENGINE ---
 
-async function processDropship(order, sourceStore, targetStore, targetSupplierTag) {
-  const orderName = order?.name || `ID_${order?.id}`;
-  log('INFO', `🔍 Evaluating Order ${orderName} from ${sourceStore.name} for dropship items...`);
+function getStoreByExactSupplierNameInIndex(supplierVal) {
+  if (!supplierVal || typeof supplierVal !== 'string' || !supplierVal.trim()) return null;
+  const cleanTarget = supplierVal.trim().toLowerCase();
+  const config = getShopifyConfig();
+  const stores = Object.values(config).filter(s => s && s.url && s.token);
 
-  // 🛑 LOOP PROTECTION: Check for automated dropship tag
-  const orderTags = (order?.tags || '').toLowerCase();
-  if (orderTags.includes('automated dropship') || orderTags.includes('soldby-')) {
-    log('INFO', `🛑 Loop Protection: Order ${orderName} has 'Automated Dropship' or 'Soldby-' tag. Skipping to prevent loop.`);
-    return;
+  const matches = stores.filter(s => {
+    const sSupplier = (s.supplierName || '').trim().toLowerCase();
+    return sSupplier === cleanTarget;
+  });
+
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    log('WARN', `⚠️ Multiple stores configured with supplier name "${supplierVal}". Supplier ownership is not unique.`);
+    return null;
   }
 
-  const lineItems = order?.line_items || [];
-  log('INFO', `Order ${orderName} contains ${lineItems.length} line item(s).`);
+  const fallbackMatches = stores.filter(s => {
+    const sName = (s.name || '').trim().toLowerCase();
+    const sKey = (s.key || '').trim().toLowerCase();
+    return sName === cleanTarget || sKey === cleanTarget;
+  });
 
-  const itemsToDropship = [];
-  const processedSkus = [];
-
-  for (const item of lineItems) {
-    const sku = item.sku ? item.sku.trim() : '';
-    if (!sku) {
-      log('WARN', `Line item '${item.title}' (ID ${item.id}) in order ${orderName} has NO SKU. Skipping.`);
-      continue;
-    }
-
-    processedSkus.push(`${sku} (x${item.quantity || 1})`);
-    log('INFO', `Inspecting line item SKU: '${sku}' (Product ID: ${item.product_id})...`);
-
-    // Fetch tags & metafields from source store to see if this product belongs to supplier
-    const productInfo = await getProductDetails(sourceStore, item.product_id);
-    const tagsString = productInfo.tags;
-    const metafieldVal = productInfo.metafield;
-    log('INFO', `Product ${item.product_id} tags: "${tagsString}", custom.supplier metafield: "${metafieldVal || 'None'}"`);
-
-    const isMatch = checkOwnershipMatch(metafieldVal, tagsString, targetSupplierTag);
-    if (isMatch) {
-      log('INFO', `✓ SUPPLIER MATCH: Item SKU '${sku}' belongs to target supplier tag '${targetSupplierTag}'!`);
-      itemsToDropship.push({
-        sku: sku,
-        quantity: item.quantity || 1,
-        title: item.title
-      });
-    } else {
-      log('INFO', `ℹ️ Item SKU '${sku}' does not match target supplier tag '${targetSupplierTag}'.`);
-    }
+  if (fallbackMatches.length === 1) return fallbackMatches[0];
+  if (fallbackMatches.length > 1) {
+    log('WARN', `⚠️ Multiple stores matched fallback supplier identifier "${supplierVal}". Supplier ownership is not unique.`);
+    return null;
   }
 
-  if (itemsToDropship.length > 0) {
-    log('INFO', `🚀 Found ${itemsToDropship.length} item(s) to dropship to ${targetStore.name}. Creating B2B order...`);
-    await createOrderOnSupplierStore(targetStore, sourceStore, itemsToDropship, orderName, processedSkus);
-  } else {
-    log('INFO', `ℹ️ No dropship items matching '${targetSupplierTag}' found in order ${orderName}. Nothing to sync.`);
-  }
+  log('WARN', `⚠️ No store found with configured supplier name matching "${supplierVal}".`);
+  return null;
 }
 
-function checkOwnershipMatch(metafield, tags, targetSupplierTag) {
-  if (metafield && typeof metafield === 'string' && metafield.trim() !== '') {
-    const cleanMeta = metafield.trim().toLowerCase();
-    const cleanTarget = targetSupplierTag.replace(/^(?:Supplier|supplier)[:_\s]+/i, '').trim().toLowerCase();
-    if (cleanMeta === cleanTarget || targetSupplierTag.toLowerCase().includes(cleanMeta)) return true;
-  }
-  return hasSupplierTag(tags, targetSupplierTag);
-}
-
-async function getProductDetails(store, productId) {
-  if (!productId) return { tags: '', metafield: null };
-  const domain = cleanDomain(store.url);
-
-  let tags = '';
-  let metafield = null;
-
-  try {
-    const res = await axios.get(`https://${domain}/admin/api/2024-01/products/${productId}.json`, {
-      headers: { 'X-Shopify-Access-Token': store.token },
-      timeout: 8000
-    });
-    tags = res.data?.product?.tags || '';
-  } catch (e) {}
-
-  try {
-    const metaRes = await axios.get(`https://${domain}/admin/api/2024-01/products/${productId}/metafields.json`, {
-      headers: { 'X-Shopify-Access-Token': store.token },
-      timeout: 8000
-    });
-    const metafields = metaRes.data?.metafields || [];
-    const found = metafields.find(m => (m.namespace === 'custom' && m.key === 'supplier') || m.key === 'supplier');
-    if (found && found.value) metafield = String(found.value).trim();
-  } catch (e) {}
-
-  return { tags, metafield };
-}
-
-async function createOrderOnSupplierStore(supplierStore, retailerStore, items, sourceOrderName, processedSkus = []) {
-  log('INFO', `🔄 Creating fulfillment order on ${supplierStore.name} for ${items.length} item(s)...`);
-
-  const line_items = [];
-  for (const item of items) {
-    const variantId = await findVariantIdBySku(supplierStore, item.sku);
-    if (variantId) {
-      line_items.push({
-        variant_id: variantId,
-        quantity: item.quantity
-      });
-      log('INFO', `✓ Mapped SKU '${item.sku}' -> Supplier Variant ID: ${variantId}`);
-    } else {
-      log('ERROR', `❌ SKU '${item.sku}' NOT FOUND on ${supplierStore.name}. Cannot include in supplier order.`);
-    }
-  }
-
-  if (line_items.length === 0) {
-    log('ERROR', `❌ None of the dropship SKUs could be matched on ${supplierStore.name}. Order creation aborted.`);
-    return;
-  }
-
-  const sellerEmail = retailerStore.ownerEmail && retailerStore.ownerEmail.includes('@')
-    ? retailerStore.ownerEmail
-    : 'seller@dropship-sync.com';
-
-  const sellerStoreName = retailerStore.name || `Store ${retailerStore.key}`;
-
-  const orderPayload = {
-    order: {
-      line_items: line_items,
-      customer: {
-        first_name: sellerStoreName,
-        last_name: "(Seller Store)",
-        email: sellerEmail
-      },
-      email: sellerEmail,
-      shipping_address: retailerStore.address,
-      billing_address: retailerStore.address,
-      source_name: "Dropshipping",
-      tags: `Automated Dropship, Dropshipping, Soldby-${retailerStore.key || sellerStoreName}`,
-      financial_status: "pending",
-      inventory_behaviour: "decrement_obeying_policy",
-      note: `Dropshipping order placed by ${sellerStoreName} (${retailerStore.url}) for original order #${sourceOrderName}.`
-    }
-  };
-
-  try {
-    const domain = cleanDomain(supplierStore.url);
-    const res = await axios.post(`https://${domain}/admin/api/2024-01/orders.json`, orderPayload, {
-      headers: { 'X-Shopify-Access-Token': supplierStore.token },
-      timeout: 10000
-    });
-
-    const newOrderNumber = res.data?.order?.order_number || res.data?.order?.id;
-    log('INFO', `🎉 SUCCESS! Created Order #${newOrderNumber} on ${supplierStore.name} (Source Order: ${sourceOrderName})`);
-  } catch (e) {
-    const detail = e.response ? JSON.stringify(e.response.data) : e.message;
-    log('ERROR', `❌ Failed to create order on ${supplierStore.name}: ${detail}`);
-  }
-}
-
-async function findVariantIdBySku(store, sku) {
+async function findVariantBySkuAndSupplierInIndex(store, sku, targetSupplier) {
   const cleanSku = sku.trim();
+  const cleanTargetSupplier = targetSupplier.trim().toLowerCase();
+  if (!cleanSku || !cleanTargetSupplier || !store || !store.url || !store.token) return null;
   const domain = cleanDomain(store.url);
 
-  // 1. Try GraphQL Query first
   const query = `
-    {
-      products(first: 10, query: "sku:${cleanSku}") {
+    query findVariantAndSupplier($query: String!) {
+      productVariants(first: 25, query: $query) {
         edges {
           node {
-            variants(first: 25) {
-              edges {
-                node {
-                  id
-                  sku
-                }
+            id
+            sku
+            product {
+              id
+              status
+              metafield(namespace: "custom", key: "supplier") {
+                value
               }
             }
           }
@@ -594,42 +481,328 @@ async function findVariantIdBySku(store, sku) {
   `;
 
   try {
-    const res = await axios.post(`https://${domain}/admin/api/2024-01/graphql.json`, { query }, {
-      headers: { 'X-Shopify-Access-Token': store.token },
-      timeout: 8000
-    });
+    const res = await axios.post(
+      `https://${domain}/admin/api/2024-01/graphql.json`,
+      { query, variables: { query: `sku:"${cleanSku.replace(/"/g, '\\"')}"` } },
+      {
+        headers: { 'X-Shopify-Access-Token': store.token },
+        timeout: 8000
+      }
+    );
 
-    const products = res.data?.data?.products?.edges || [];
-    for (const pEdge of products) {
-      const variants = pEdge.node?.variants?.edges || [];
-      for (const vEdge of variants) {
-        if (vEdge.node?.sku && vEdge.node.sku.trim().toLowerCase() === cleanSku.toLowerCase()) {
-          const gid = vEdge.node.id;
-          return gid ? gid.split('/').pop() : null;
+    const edges = res.data?.data?.productVariants?.edges || [];
+    for (const edge of edges) {
+      const vNode = edge.node;
+      if (!vNode || !vNode.sku) continue;
+
+      if (vNode.sku.trim().toLowerCase() === cleanSku.toLowerCase()) {
+        const prod = vNode.product;
+        const suppValue = prod?.metafield?.value ? String(prod.metafield.value).trim().toLowerCase() : '';
+
+        if (suppValue === cleanTargetSupplier) {
+          const variantGid = vNode.id;
+          const productGid = prod?.id;
+          return {
+            variantId: variantGid ? variantGid.split('/').pop() : null,
+            productId: productGid ? productGid.split('/').pop() : null,
+            status: prod?.status,
+            supplierMetafield: prod?.metafield?.value
+          };
         }
       }
     }
-  } catch (e) {
-    log('WARN', `GraphQL variant lookup failed for SKU '${cleanSku}' on ${store.name}: ${e.message}`);
+  } catch (err) {
+    log('WARN', `GraphQL variant + supplier search failed for SKU '${cleanSku}' on ${store.name}: ${err.message}`);
   }
 
-  // 2. Fallback to REST API variant lookup
   try {
-    const restRes = await axios.get(`https://${domain}/admin/api/2024-01/variants.json?sku=${encodeURIComponent(cleanSku)}`, {
-      headers: { 'X-Shopify-Access-Token': store.token },
-      timeout: 8000
-    });
+    const restRes = await axios.get(
+      `https://${domain}/admin/api/2024-01/products.json?limit=250&fields=id,status,variants`,
+      {
+        headers: { 'X-Shopify-Access-Token': store.token },
+        timeout: 10000
+      }
+    );
 
-    const variants = restRes.data?.variants || [];
-    const match = variants.find(v => v.sku && v.sku.trim().toLowerCase() === cleanSku.toLowerCase());
-    if (match) {
-      return match.id;
+    const products = restRes.data?.products || [];
+    for (const prod of products) {
+      const variants = prod.variants || [];
+      const hasSku = variants.some(
+        v => v.sku && v.sku.trim().toLowerCase() === cleanSku.toLowerCase()
+      );
+
+      if (hasSku) {
+        const restDetails = await getProductDetails(store, String(prod.id));
+        const mfValue = restDetails.metafield ? restDetails.metafield.trim().toLowerCase() : '';
+
+        if (mfValue === cleanTargetSupplier) {
+          const matchedVar = variants.find(
+            v => v.sku && v.sku.trim().toLowerCase() === cleanSku.toLowerCase()
+          );
+          return {
+            variantId: String(matchedVar.id),
+            productId: String(prod.id),
+            status: prod.status,
+            supplierMetafield: restDetails.metafield || undefined
+          };
+        }
+      }
     }
-  } catch (e) {
-    log('WARN', `REST variant lookup fallback failed for SKU '${cleanSku}' on ${store.name}: ${e.message}`);
+  } catch (err) {
+    log('WARN', `REST variant + supplier fallback failed for SKU '${cleanSku}' on ${store.name}: ${err.message}`);
   }
 
   return null;
+}
+
+async function updateProductStatusToDraftInIndex(store, productId) {
+  const domain = cleanDomain(store.url);
+  const cleanId = String(productId).replace(/^gid:\/\/shopify\/Product\//, '');
+  if (!cleanId) return false;
+
+  const query = `
+    mutation productUpdate($input: ProductInput!) {
+      productUpdate(input: $input) {
+        product {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    input: {
+      id: `gid://shopify/Product/${cleanId}`,
+      status: "DRAFT"
+    }
+  };
+
+  try {
+    const res = await axios.post(
+      `https://${domain}/admin/api/2024-01/graphql.json`,
+      { query, variables },
+      {
+        headers: { 'X-Shopify-Access-Token': store.token },
+        timeout: 8000
+      }
+    );
+
+    const userErrors = res.data?.data?.productUpdate?.userErrors || [];
+    if (userErrors.length === 0 && res.data?.data?.productUpdate?.product) {
+      return true;
+    }
+  } catch (err) {
+    log('WARN', `GraphQL productUpdate failed for product ${cleanId} on ${store.name}: ${err.message}`);
+  }
+
+  try {
+    await axios.put(
+      `https://${domain}/admin/api/2024-01/products/${cleanId}.json`,
+      { product: { id: cleanId, status: 'draft' } },
+      {
+        headers: { 'X-Shopify-Access-Token': store.token },
+        timeout: 8000
+      }
+    );
+    return true;
+  } catch (err) {
+    log('ERROR', `REST product status update failed for ${cleanId} on ${store.name}: ${err.message}`);
+    return false;
+  }
+}
+
+async function setMatchingProductsToDraftInIndex(excludeKeys, sku, targetSupplier) {
+  const config = getShopifyConfig();
+  const stores = Object.values(config).filter(s => s && s.url && s.token);
+  const cleanExcludes = excludeKeys.map(k => k.toLowerCase());
+
+  for (const store of stores) {
+    const storeKey = store.key.toLowerCase();
+    const storeDomain = cleanDomain(store.url).toLowerCase();
+    if (cleanExcludes.includes(storeKey) || cleanExcludes.includes(storeDomain)) continue;
+
+    try {
+      const match = await findVariantBySkuAndSupplierInIndex(store, sku, targetSupplier);
+      if (match && match.productId) {
+        const success = await updateProductStatusToDraftInIndex(store, match.productId);
+        if (success) {
+          log('INFO', `📝 Set product status to 'DRAFT' for SKU '${sku}' (custom.supplier='${targetSupplier}', Product ID: ${match.productId}) on connected store '${store.name}'.`);
+        }
+      } else {
+        log('INFO', `ℹ️ No matching product with SKU '${sku}' and custom.supplier='${targetSupplier}' found on '${store.name}'. Status unchanged.`);
+      }
+    } catch (err) {
+      log('ERROR', `Failed to check/update product status for SKU '${sku}' on '${store.name}': ${err.message}`);
+    }
+  }
+}
+
+async function processDropship(order, sourceStore) {
+  const orderName = order?.name || `#${order?.order_number || order?.id}`;
+  log('INFO', `🔍 Evaluating Order ${orderName} from ${sourceStore.name} for product ownership & routing...`);
+
+  const orderTags = (order?.tags || '').toLowerCase();
+  const orderNote = (order?.note || '').toLowerCase();
+  if (
+    orderTags.includes('automated dropship') ||
+    orderTags.includes('soldby') ||
+    orderTags.includes('dropshipping') ||
+    orderNote.includes('automated supplier order')
+  ) {
+    log('INFO', `🛑 Loop Protection: Order ${orderName} is a supplier-generated order. Skipping routing.`);
+    return;
+  }
+
+  const lineItems = order?.line_items || [];
+  log('INFO', `Order ${orderName} contains ${lineItems.length} line item(s).`);
+
+  const ownerOrdersMap = new Map();
+
+  for (const item of lineItems) {
+    const sku = item.sku ? item.sku.trim() : '';
+    if (!sku) {
+      log('WARN', `Line item '${item.title}' in order ${orderName} has NO SKU. Skipping.`);
+      continue;
+    }
+
+    const productInfo = await getProductDetails(sourceStore, item.product_id);
+    let customSupplier = productInfo.metafield;
+
+    if (!customSupplier && productInfo.tags) {
+      const match = productInfo.tags.match(/^(?:Supplier|supplier)[:_\s]+(.+)$/i);
+      if (match && match[1]) customSupplier = match[1].trim();
+    }
+
+    log('INFO', `Inspecting line item SKU: '${sku}' -> custom.supplier: "${customSupplier || 'None'}"`);
+
+    if (!customSupplier) {
+      log('WARN', `⚠️ Cannot identify supplier ownership for SKU '${sku}': custom.supplier metafield is missing. Skipping automatic routing.`);
+      continue;
+    }
+
+    const ownerStore = getStoreByExactSupplierNameInIndex(customSupplier);
+
+    if (!ownerStore) {
+      log('WARN', `⚠️ Supplier ownership for custom.supplier="${customSupplier}" on SKU '${sku}' cannot be identified uniquely among connected stores. Skipping automatic routing.`);
+      continue;
+    }
+
+    const isOwnerSale = (cleanDomain(sourceStore.url).toLowerCase() === cleanDomain(ownerStore.url).toLowerCase());
+
+    if (isOwnerSale) {
+      log('INFO', `✓ SCENARIO 1 (Owner Sale): Store '${sourceStore.name}' (Supplier: ${sourceStore.supplierName}) sold its own product SKU '${sku}' (custom.supplier='${customSupplier}'). Keeping original order on ${sourceStore.name}. No supplier order created.`);
+      await setMatchingProductsToDraftInIndex([sourceStore.key, sourceStore.url], sku, customSupplier);
+    } else {
+      log('INFO', `⚡ SCENARIO 2 (Non-Owner Sale): Store '${sourceStore.name}' sold SKU '${sku}' belonging to Owner Store '${ownerStore.name}' (custom.supplier='${customSupplier}').`);
+
+      if (!ownerOrdersMap.has(ownerStore.key)) {
+        ownerOrdersMap.set(ownerStore.key, { ownerStore, items: [] });
+      }
+      ownerOrdersMap.get(ownerStore.key).items.push({
+        sku,
+        quantity: item.quantity || 1,
+        title: item.title,
+        supplier: customSupplier
+      });
+
+      await setMatchingProductsToDraftInIndex([sourceStore.key, sourceStore.url, ownerStore.key, ownerStore.url], sku, customSupplier);
+    }
+  }
+
+  for (const [ownerKey, { ownerStore, items }] of ownerOrdersMap.entries()) {
+    log('INFO', `🚀 Creating Supplier Order on Owner Store '${ownerStore.name}' for ${items.length} item(s)...`);
+    await createOrderOnOwnerStoreInIndex(ownerStore, sourceStore, items, orderName, order);
+  }
+}
+
+async function createOrderOnOwnerStoreInIndex(ownerStore, sellingStore, items, sourceOrderName, originalOrder) {
+  const domain = cleanDomain(ownerStore.url);
+  const lineItemsPayload = [];
+
+  for (const item of items) {
+    const match = await findVariantBySkuAndSupplierInIndex(ownerStore, item.sku, item.supplier);
+    if (match && match.variantId) {
+      const parsedId = parseInt(match.variantId, 10);
+      lineItemsPayload.push({
+        variant_id: isNaN(parsedId) ? match.variantId : parsedId,
+        quantity: item.quantity
+      });
+      log('INFO', `✓ Matched SKU '${item.sku}' + custom.supplier='${item.supplier}' on Owner Store ${ownerStore.name} -> Variant ID: ${match.variantId}`);
+    } else {
+      log('ERROR', `❌ SKU '${item.sku}' with custom.supplier='${item.supplier}' NOT FOUND on Owner Store ${ownerStore.name}.`);
+    }
+  }
+
+  if (lineItemsPayload.length === 0) {
+    log('ERROR', `❌ None of the SKUs matching custom.supplier could be resolved on owner store ${ownerStore.name}.`);
+    return;
+  }
+
+  const sellerEmail = sellingStore.ownerEmail && sellingStore.ownerEmail.includes('@')
+    ? sellingStore.ownerEmail
+    : 'seller@dropship-sync.com';
+
+  const sellingStoreName = sellingStore.name || `Store ${sellingStore.supplierName || sellingStore.key}`;
+
+  let soldByTag = `SOLDby${sellingStoreName.replace(/\s+/g, '')}`;
+  if (
+    sellingStore.key === 'STORE_B' ||
+    sellingStoreName.toLowerCase().includes('store b') ||
+    (sellingStore.url && sellingStore.url.includes('hamza'))
+  ) {
+    soldByTag = 'SOLDbyStoreB';
+  }
+
+  let shippingAddress = sellingStore.address || {
+    first_name: sellingStoreName,
+    last_name: "(Selling Store Owner)",
+    address1: "Store Address",
+    city: "Lahore",
+    country: "PK",
+    zip: "54000"
+  };
+
+  if (originalOrder && originalOrder.shipping_address) {
+    shippingAddress = originalOrder.shipping_address;
+  }
+
+  const orderPayload = {
+    order: {
+      line_items: lineItemsPayload,
+      customer: {
+        first_name: sellingStoreName,
+        last_name: "(Selling Store Owner)",
+        email: sellerEmail
+      },
+      email: sellerEmail,
+      shipping_address: shippingAddress,
+      billing_address: shippingAddress,
+      source_name: "Dropshipping",
+      tags: `${soldByTag}, Automated Dropship, Dropshipping, Soldby-${sellingStore.supplierName || sellingStoreName}`,
+      financial_status: "pending",
+      inventory_behaviour: "decrement_obeying_policy",
+      note: `Automated supplier order placed by selling store ${sellingStoreName} (${sellingStore.url}) for original order #${sourceOrderName}.`
+    }
+  };
+
+  try {
+    const res = await axios.post(`https://${domain}/admin/api/2024-01/orders.json`, orderPayload, {
+      headers: { 'X-Shopify-Access-Token': ownerStore.token },
+      timeout: 10000
+    });
+
+    const newOrder = res.data?.order;
+    const orderName = newOrder?.name || `#${newOrder?.order_number || newOrder?.id}`;
+    log('INFO', `🎉 SUCCESS! Created Order ${orderName} (Tag: ${soldByTag}) on Owner Store ${ownerStore.name} for original order #${sourceOrderName}`);
+  } catch (e) {
+    const detail = e.response ? JSON.stringify(e.response.data) : e.message;
+    log('ERROR', `❌ Failed to create order on owner store ${ownerStore.name}: ${detail}`);
+  }
 }
 
 // Start local server if directly executed

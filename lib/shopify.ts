@@ -609,11 +609,376 @@ export async function tagProductWithSellerOnStores(sku: string, sellerName: stri
 }
 
 
+// Find Variant by SKU AND custom.supplier metafield using GraphQL with REST Fallback
+export async function findVariantBySkuAndSupplier(
+  shopDomain: string,
+  accessToken: string,
+  sku: string,
+  targetSupplier: string
+): Promise<{ variantId: string; productId?: string; status?: string; supplierMetafield?: string } | null> {
+  const cleanSku = sku.trim();
+  const cleanTargetSupplier = targetSupplier.trim().toLowerCase();
+  if (!cleanSku || !cleanTargetSupplier) return null;
+  const domain = cleanShopDomain(shopDomain);
+
+  // 1. GraphQL Query for variant and product metafield custom.supplier
+  const query = `
+    query findVariantAndSupplier($query: String!) {
+      productVariants(first: 25, query: $query) {
+        edges {
+          node {
+            id
+            sku
+            product {
+              id
+              status
+              metafield(namespace: "custom", key: "supplier") {
+                value
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  try {
+    const res = await axios.post(
+      `https://${domain}/admin/api/2024-01/graphql.json`,
+      { query, variables: { query: `sku:"${cleanSku.replace(/"/g, '\\"')}"` } },
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 8000
+      }
+    );
+
+    const edges = res.data?.data?.productVariants?.edges || [];
+    for (const edge of edges) {
+      const vNode = edge.node;
+      if (!vNode || !vNode.sku) continue;
+
+      if (vNode.sku.trim().toLowerCase() === cleanSku.toLowerCase()) {
+        const prod = vNode.product;
+        const suppValue = prod?.metafield?.value ? String(prod.metafield.value).trim().toLowerCase() : '';
+
+        if (suppValue === cleanTargetSupplier) {
+          const variantGid = vNode.id;
+          const productGid = prod?.id;
+          return {
+            variantId: variantGid ? variantGid.split('/').pop()! : '',
+            productId: productGid ? productGid.split('/').pop()! : undefined,
+            status: prod?.status,
+            supplierMetafield: prod?.metafield?.value
+          };
+        }
+      }
+    }
+  } catch (err: any) {
+    await db.addLog('WARN', `GraphQL variant + supplier search failed for SKU '${cleanSku}' on ${domain}: ${err.message}`, 'variant_lookup', domain);
+  }
+
+  // 2. REST Fallback
+  try {
+    const restRes = await axios.get(
+      `https://${domain}/admin/api/2024-01/products.json?limit=250&fields=id,status,variants`,
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 10000
+      }
+    );
+
+    const products = restRes.data?.products || [];
+    for (const prod of products) {
+      const variants = prod.variants || [];
+      const hasSku = variants.some(
+        (v: any) => v.sku && v.sku.trim().toLowerCase() === cleanSku.toLowerCase()
+      );
+
+      if (hasSku) {
+        const restDetails = await getProductDetailsREST(domain, accessToken, String(prod.id));
+        const mfValue = restDetails.supplierMetafield ? restDetails.supplierMetafield.trim().toLowerCase() : '';
+
+        if (mfValue === cleanTargetSupplier) {
+          const matchedVar = variants.find(
+            (v: any) => v.sku && v.sku.trim().toLowerCase() === cleanSku.toLowerCase()
+          );
+          return {
+            variantId: String(matchedVar.id),
+            productId: String(prod.id),
+            status: prod.status,
+            supplierMetafield: restDetails.supplierMetafield || undefined
+          };
+        }
+      }
+    }
+  } catch (err: any) {
+    await db.addLog('WARN', `REST variant + supplier fallback failed for SKU '${cleanSku}' on ${domain}: ${err.message}`, 'variant_lookup', domain);
+  }
+
+  return null;
+}
+
+// Update Product Status to DRAFT using GraphQL with REST Fallback
+export async function updateProductStatusToDraft(
+  shopDomain: string,
+  accessToken: string,
+  productId: string
+): Promise<boolean> {
+  const domain = cleanShopDomain(shopDomain);
+  const cleanId = productId.replace(/^gid:\/\/shopify\/Product\//, '');
+  if (!cleanId) return false;
+
+  // 1. GraphQL Mutation `productUpdate`
+  const query = `
+    mutation productUpdate($input: ProductInput!) {
+      productUpdate(input: $input) {
+        product {
+          id
+          status
+        }
+        userErrors {
+          field
+          message
+        }
+      }
+    }
+  `;
+
+  const variables = {
+    input: {
+      id: `gid://shopify/Product/${cleanId}`,
+      status: "DRAFT"
+    }
+  };
+
+  try {
+    const res = await axios.post(
+      `https://${domain}/admin/api/2024-01/graphql.json`,
+      { query, variables },
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 8000
+      }
+    );
+
+    const userErrors = res.data?.data?.productUpdate?.userErrors || [];
+    if (userErrors.length === 0 && res.data?.data?.productUpdate?.product) {
+      return true;
+    }
+    if (userErrors.length > 0) {
+      await db.addLog('WARN', `GraphQL productUpdate userErrors for ${cleanId} on ${domain}: ${JSON.stringify(userErrors)}`, 'product_update', domain);
+    }
+  } catch (err: any) {
+    await db.addLog('WARN', `GraphQL productUpdate failed for product ${cleanId} on ${domain}: ${err.message}`, 'product_update', domain);
+  }
+
+  // 2. REST API Fallback
+  try {
+    await axios.put(
+      `https://${domain}/admin/api/2024-01/products/${cleanId}.json`,
+      { product: { id: cleanId, status: 'draft' } },
+      {
+        headers: { 'X-Shopify-Access-Token': accessToken },
+        timeout: 8000
+      }
+    );
+    return true;
+  } catch (err: any) {
+    await db.addLog('ERROR', `REST product update status to draft failed for ${cleanId} on ${domain}: ${err.message}`, 'product_update', domain);
+    return false;
+  }
+}
+
+// Automatically change matching product's status from ACTIVE to DRAFT on connected stores (excluding specified domains) where both SKU and custom.supplier match!
+export async function setMatchingProductsToDraft(
+  excludeShopDomains: string[],
+  sku: string,
+  targetSupplier: string
+): Promise<void> {
+  const stores = await db.getAllStores();
+  const cleanExcludes = excludeShopDomains.map(d => cleanShopDomain(d));
+
+  for (const store of stores) {
+    const cleanStoreDomain = cleanShopDomain(store.shopDomain);
+    if (cleanExcludes.includes(cleanStoreDomain) || !store.isActive || !store.accessToken) {
+      continue;
+    }
+
+    try {
+      // Find variant on target store matching BOTH SKU AND custom.supplier
+      const match = await findVariantBySkuAndSupplier(
+        store.shopDomain,
+        store.accessToken,
+        sku,
+        targetSupplier
+      );
+
+      if (match && match.productId) {
+        const draftSuccess = await updateProductStatusToDraft(
+          store.shopDomain,
+          store.accessToken,
+          match.productId
+        );
+
+        if (draftSuccess) {
+          await db.addLog(
+            'INFO',
+            `📝 Set product status to 'DRAFT' for SKU '${sku}' (custom.supplier='${targetSupplier}', Product ID: ${match.productId}) on connected store '${store.name}' (${store.shopDomain}).`,
+            'product_status_update',
+            store.shopDomain
+          );
+        }
+      } else {
+        await db.addLog(
+          'INFO',
+          `ℹ️ No matching product with SKU '${sku}' and custom.supplier='${targetSupplier}' found on '${store.name}'. Status unchanged.`,
+          'product_status_update',
+          store.shopDomain
+        );
+      }
+    } catch (err: any) {
+      await db.addLog(
+        'ERROR',
+        `Failed to check/update product status to DRAFT for SKU '${sku}' on '${store.name}': ${err.message}`,
+        'product_status_update',
+        store.shopDomain
+      );
+    }
+  }
+}
+
+// Create Order on Owner Store (Scenario 2: Non-owner sells product)
+export async function createOrderOnOwnerStore(
+  ownerStore: any,
+  sellingStore: any,
+  items: { sku: string; quantity: number; title: string; supplier: string }[],
+  sourceOrderName: string,
+  originalOrder?: any
+): Promise<{ success: boolean; orderId?: string; orderName?: string; error?: string }> {
+  const domain = cleanShopDomain(ownerStore.shopDomain);
+  const lineItemsPayload: any[] = [];
+
+  for (const item of items) {
+    // Find variant on owner store matching BOTH SKU AND custom.supplier
+    const variantMatch = await findVariantBySkuAndSupplier(
+      ownerStore.shopDomain,
+      ownerStore.accessToken,
+      item.sku,
+      item.supplier
+    );
+
+    if (variantMatch && variantMatch.variantId) {
+      const parsedId = parseInt(variantMatch.variantId, 10);
+      lineItemsPayload.push({
+        variant_id: isNaN(parsedId) ? variantMatch.variantId : parsedId,
+        quantity: item.quantity
+      });
+      await db.addLog(
+        'INFO',
+        `✓ Matched SKU '${item.sku}' + custom.supplier='${item.supplier}' on Owner Store ${ownerStore.name} -> Variant ID: ${variantMatch.variantId}`,
+        'order_creation',
+        ownerStore.shopDomain
+      );
+    } else {
+      await db.addLog(
+        'ERROR',
+        `❌ SKU '${item.sku}' with custom.supplier='${item.supplier}' NOT FOUND on Owner Store ${ownerStore.name}. Excluded from owner order.`,
+        'order_creation',
+        ownerStore.shopDomain
+      );
+    }
+  }
+
+  if (lineItemsPayload.length === 0) {
+    return {
+      success: false,
+      error: `None of the SKUs matching custom.supplier could be resolved on owner store ${ownerStore.name}`
+    };
+  }
+
+  const sellerEmail = sellingStore.ownerEmail && sellingStore.ownerEmail.includes('@')
+    ? sellingStore.ownerEmail
+    : 'seller@dropship-sync.com';
+
+  const sellingStoreName = sellingStore.name || `Store ${sellingStore.supplierName || sellingStore.id}`;
+
+  let soldByTag = `SOLDby${sellingStoreName.replace(/\s+/g, '')}`;
+  if (
+    sellingStore.id === 'store_b' ||
+    sellingStoreName.toLowerCase().includes('store b') ||
+    sellingStore.shopDomain.includes('hamza')
+  ) {
+    soldByTag = 'SOLDbyStoreB';
+  }
+
+  let shippingAddress: any = {
+    first_name: sellingStoreName,
+    last_name: "(Selling Store Owner)",
+    address1: "Store Address",
+    city: "Lahore",
+    country: "PK",
+    zip: "54000"
+  };
+
+  if (originalOrder?.shipping_address) {
+    shippingAddress = originalOrder.shipping_address;
+  }
+
+  const orderPayload = {
+    order: {
+      line_items: lineItemsPayload,
+      customer: {
+        first_name: sellingStoreName,
+        last_name: "(Selling Store Owner)",
+        email: sellerEmail
+      },
+      email: sellerEmail,
+      shipping_address: shippingAddress,
+      billing_address: shippingAddress,
+      source_name: "Dropshipping",
+      tags: `${soldByTag}, Automated Dropship, Dropshipping, Soldby-${sellingStore.supplierName || sellingStoreName}`,
+      financial_status: "pending",
+      inventory_behaviour: "decrement_obeying_policy",
+      note: `Automated supplier order placed by selling store ${sellingStoreName} (${sellingStore.shopDomain}) for original order #${sourceOrderName}.`
+    }
+  };
+
+  try {
+    const res = await axios.post(`https://${domain}/admin/api/2024-01/orders.json`, orderPayload, {
+      headers: { 'X-Shopify-Access-Token': ownerStore.accessToken },
+      timeout: 10000
+    });
+
+    const newOrder = res.data?.order;
+    const orderName = newOrder?.name || `#${newOrder?.order_number || newOrder?.id}`;
+    await db.addLog(
+      'INFO',
+      `🎉 Successfully created Order ${orderName} (Tag: ${soldByTag}) on Owner Store ${ownerStore.name} for original order #${sourceOrderName} from ${sellingStoreName}!`,
+      'order_creation',
+      ownerStore.shopDomain
+    );
+
+    return {
+      success: true,
+      orderId: String(newOrder?.id),
+      orderName: orderName
+    };
+  } catch (err: any) {
+    const errorMsg = err.response ? JSON.stringify(err.response.data) : err.message;
+    await db.addLog('ERROR', `Failed to create order on owner store ${ownerStore.name}: ${errorMsg}`, 'order_creation', ownerStore.shopDomain);
+    return {
+      success: false,
+      error: errorMsg
+    };
+  }
+}
+
 // Process Order Created Webhook Event
 export async function processOrderCreatedWebhook(order: any, shopDomain: string, sourceStore: any) {
-  const orderName = order.name || `OTS-${order.order_number || order.id}`;
+  const orderName = order.name || `#${order.order_number || order.id}`;
   const orderIdStr = String(order.id || '');
 
+  // 1. Check if already processed (Idempotency)
   if (orderIdStr && orderIdStr !== 'N/A') {
     const alreadySynced = await db.hasOrderBeenSynced(shopDomain, orderIdStr);
     if (alreadySynced) {
@@ -624,14 +989,21 @@ export async function processOrderCreatedWebhook(order: any, shopDomain: string,
 
   await db.addLog('INFO', `📦 Webhook Received: Order ${orderName} created on ${shopDomain}`, 'orders/create', shopDomain);
 
-  // 🛑 Loop Protection Check
+  // 2. Loop Protection & Routing Check
+  // Never route supplier-generated orders again!
   const orderTags = Array.isArray(order.tags) ? order.tags.join(', ') : (order.tags || '');
-  if (orderTags.toLowerCase().includes('automated dropship') || orderTags.toLowerCase().includes('soldby-')) {
-    await db.addLog('INFO', `🛑 Loop Protection: Order ${orderName} has 'Automated Dropship' or 'Soldby-' tag. Skipping.`, 'orders/create', shopDomain);
+  const orderNote = order.note || '';
+  if (
+    orderTags.toLowerCase().includes('automated dropship') ||
+    orderTags.toLowerCase().includes('soldby') ||
+    orderTags.toLowerCase().includes('dropshipping') ||
+    orderNote.toLowerCase().includes('automated supplier order')
+  ) {
+    await db.addLog('INFO', `🛑 Loop Protection: Order ${orderName} is a supplier-generated order (has 'SOLDby' or 'Automated Dropship' tag/note). Skipping routing.`, 'orders/create', shopDomain);
     return;
   }
 
-  const retailerStore = sourceStore || {
+  const sellingStore = sourceStore || (await db.getStoreByDomain(shopDomain)) || {
     shopDomain,
     name: shopDomain,
     supplierName: shopDomain.split('.')[0],
@@ -639,8 +1011,8 @@ export async function processOrderCreatedWebhook(order: any, shopDomain: string,
   };
 
   // Fetch complete order details using GraphQL API
-  const parsedOrder = sourceStore?.accessToken
-    ? await getOrderDetailsGraphQL(shopDomain, sourceStore.accessToken, String(order.id))
+  const parsedOrder = sellingStore?.accessToken
+    ? await getOrderDetailsGraphQL(shopDomain, sellingStore.accessToken, String(order.id))
     : null;
 
   let lineItems: any[] = parsedOrder?.lineItems || [];
@@ -658,130 +1030,152 @@ export async function processOrderCreatedWebhook(order: any, shopDomain: string,
     }));
   }
 
-  // Maps for cross-store dropshipping and self-sales
-  const supplierItemsMap: Map<string, { sku: string; quantity: number }[]> = new Map();
-  const selfSaleItems: { sku: string; quantity: number }[] = [];
+  if (lineItems.length === 0) {
+    await db.addLog('WARN', `Order ${orderName} has no line items. Skipping.`, 'orders/create', shopDomain);
+    return;
+  }
+
+  // 3. Process each line item independently
+  const ownerOrdersMap: Map<string, { ownerStore: any; items: { sku: string; quantity: number; title: string; supplier: string }[] }> = new Map();
   const processedSkus: string[] = [];
+  let totalProcessedItems = 0;
 
   for (const item of lineItems) {
-    if (!item.sku) {
-      await db.addLog('WARN', `Item '${item.title}' in order ${orderName} has no SKU. Skipping.`, 'orders/create', shopDomain);
+    const sku = item.sku ? item.sku.trim() : '';
+    if (!sku) {
+      await db.addLog('WARN', `Item '${item.title}' in order ${orderName} has NO SKU. Skipping line item.`, 'orders/create', shopDomain);
       continue;
     }
 
-    processedSkus.push(`${item.sku} (x${item.quantity})`);
+    processedSkus.push(`${sku} (x${item.quantity})`);
 
-    let tags = item.productTags;
-    let vendor = item.vendor;
-    let metafield = item.customSupplierMetafield;
-
-    // Fallback: If tags or metafield missing, fetch via REST API
-    if ((!tags || !metafield) && sourceStore?.accessToken && item.productId) {
-      const restProduct = await getProductDetailsREST(shopDomain, sourceStore.accessToken, item.productId);
-      if (restProduct.tags) tags = restProduct.tags;
-      if (restProduct.vendor) vendor = restProduct.vendor;
-      if (restProduct.supplierMetafield) metafield = restProduct.supplierMetafield;
+    // Fetch custom.supplier metafield from product if missing
+    let customSupplier = item.customSupplierMetafield;
+    if (!customSupplier && sellingStore?.accessToken && item.productId) {
+      const restProduct = await getProductDetailsREST(shopDomain, sellingStore.accessToken, item.productId);
+      if (restProduct.supplierMetafield) customSupplier = restProduct.supplierMetafield;
     }
 
-    const supplierName = extractSupplierName(tags, metafield, vendor);
+    if (!customSupplier) {
+      customSupplier = extractSupplierName(item.productTags, null, item.vendor);
+    }
+
     await db.addLog(
       'INFO',
-      `Line item SKU '${item.sku}' (Qty: ${item.quantity}) -> Resolved Ownership (custom.supplier / Tag): "${supplierName || 'None'}"`,
+      `Line item SKU '${sku}' (Qty: ${item.quantity}) -> custom.supplier: "${customSupplier || 'NONE'}"`,
       'orders/create',
       shopDomain
     );
 
-    let targetSupplierStore = supplierName ? await db.getStoreBySupplierName(supplierName) : null;
-
-    // Fallback: If supplierName wasn't resolved by tag/metafield, search other connected stores to see if one of them owns this SKU!
-    if (!targetSupplierStore) {
-      const allConnected = await db.getAllStores();
-      for (const st of allConnected) {
-        if (cleanShopDomain(st.shopDomain) !== cleanShopDomain(shopDomain) && st.accessToken) {
-          const v = await findVariantIdBySku(st.shopDomain, st.accessToken, item.sku);
-          if (v && v.variantId) {
-            targetSupplierStore = st;
-            await db.addLog(
-              'INFO',
-              `🔍 SKU Ownership Resolved: SKU '${item.sku}' matched in catalog of connected store '${st.name}' (${st.shopDomain})!`,
-              'orders/create',
-              shopDomain
-            );
-            break;
-          }
-        }
-      }
-    }
-
-    const supplierStore = targetSupplierStore || sourceStore;
-
-    if (!supplierStore || !supplierStore.shopDomain) continue;
-
-    if (supplierStore.shopDomain === shopDomain) {
-      // Scenario 2: Store A sells its own product
+    if (!customSupplier) {
       await db.addLog(
-        'INFO',
-        `✓ Store A (${shopDomain}) sells its own product (SKU '${item.sku}', Supplier: ${supplierStore.supplierName || 'Self'}). No dropshipping order required.`,
+        'WARN',
+        `⚠️ Cannot identify supplier ownership for SKU '${sku}': custom.supplier metafield is missing. Skipping automatic routing for this item.`,
         'orders/create',
         shopDomain
       );
-      selfSaleItems.push({ sku: item.sku, quantity: item.quantity });
-    } else {
-      // Scenario 1: Store B sells Store A's product
-      if (!supplierItemsMap.has(supplierStore.shopDomain)) {
-        supplierItemsMap.set(supplierStore.shopDomain, []);
-      }
-      supplierItemsMap.get(supplierStore.shopDomain)!.push({
-        sku: item.sku,
-        quantity: item.quantity
+      continue;
+    }
+
+    // Match product's custom.supplier value with configured supplier names to determine actual owner store
+    const ownerStore = await db.getStoreByExactSupplierName(customSupplier);
+
+    if (!ownerStore) {
+      await db.addLog(
+        'WARN',
+        `⚠️ Supplier ownership for custom.supplier="${customSupplier}" on SKU '${sku}' cannot be identified uniquely among connected stores. Skipping automatic routing for this item.`,
+        'orders/create',
+        shopDomain
+      );
+      continue;
+    }
+
+    totalProcessedItems++;
+
+    const isOwnerSale = (cleanShopDomain(sellingStore.shopDomain) === cleanShopDomain(ownerStore.shopDomain));
+
+    if (isOwnerSale) {
+      // --- SCENARIO 1: Owner Sells Own Product ---
+      // Store A (Supplier: ZIA) sells product XYZ-100 with custom.supplier=ZIA
+      await db.addLog(
+        'INFO',
+        `✓ SCENARIO 1 (Owner Sale): Store '${sellingStore.name}' (Supplier: ${sellingStore.supplierName}) sold its own product SKU '${sku}' (custom.supplier='${customSupplier}'). Keeping original order on ${sellingStore.name}. No supplier order created.`,
+        'orders/create',
+        shopDomain
+      );
+
+      // Automatically change matching product's status from ACTIVE to DRAFT on all other connected stores where both SKU and custom.supplier match!
+      await setMatchingProductsToDraft(
+        [cleanShopDomain(sellingStore.shopDomain)],
+        sku,
+        customSupplier
+      );
+
+      await db.recordOrderSync({
+        sourceShopDomain: shopDomain,
+        targetShopDomain: shopDomain,
+        sourceOrderId: String(order.id || 'N/A'),
+        sourceOrderName: orderName,
+        targetOrderId: String(order.id || 'N/A'),
+        targetOrderName: orderName,
+        status: 'SUCCESS',
+        skus: `${sku} (x${item.quantity})`,
+        error: `Scenario 1: Owner store (${sellingStore.name}) sold own product SKU '${sku}'. Product status set to DRAFT on connected stores.`
       });
+
+    } else {
+      // --- SCENARIO 2: Non-Owner Sells Product ---
+      // Store B (Supplier: HAMZA) sells product XYZ-100 with custom.supplier=ZIA. Owner Store is Store A (Supplier: ZIA).
+      await db.addLog(
+        'INFO',
+        `⚡ SCENARIO 2 (Non-Owner Sale): Store '${sellingStore.name}' sold SKU '${sku}' belonging to Owner Store '${ownerStore.name}' (custom.supplier='${customSupplier}').`,
+        'orders/create',
+        shopDomain
+      );
+
+      const ownerDomain = cleanShopDomain(ownerStore.shopDomain);
+      if (!ownerOrdersMap.has(ownerDomain)) {
+        ownerOrdersMap.set(ownerDomain, { ownerStore, items: [] });
+      }
+      ownerOrdersMap.get(ownerDomain)!.items.push({
+        sku,
+        quantity: item.quantity,
+        title: item.title,
+        supplier: customSupplier
+      });
+
+      // Change matching product's status from ACTIVE to DRAFT on Store C and any other connected stores, excluding owner and selling stores.
+      await setMatchingProductsToDraft(
+        [cleanShopDomain(sellingStore.shopDomain), cleanShopDomain(ownerStore.shopDomain)],
+        sku,
+        customSupplier
+      );
     }
   }
 
-  // Handle Scenario 2: Self-Sales Inventory Sync & Product Tagging
-  if (selfSaleItems.length > 0) {
-    for (const item of selfSaleItems) {
-      // Deduct sold quantity from all other connected stores
-      await syncInventoryAcrossStores(shopDomain, item.sku, item.quantity);
-
-      // Add tag Soldby-SellerName to the product across connected stores
-      await tagProductWithSellerOnStores(item.sku, retailerStore.supplierName || retailerStore.name);
-    }
-
-    const selfSkusStr = selfSaleItems.map(i => `${i.sku} (x${i.quantity})`).join(', ');
-
-    await db.recordOrderSync({
-      sourceShopDomain: shopDomain,
-      targetShopDomain: shopDomain,
-      sourceOrderId: String(order.id || 'N/A'),
-      sourceOrderName: orderName,
-      targetOrderId: String(order.id || 'N/A'),
-      targetOrderName: orderName,
-      status: 'SUCCESS',
-      skus: selfSkusStr,
-      error: `Self-sale by ${retailerStore.name}. Inventory deducted & product tagged Soldby-${retailerStore.supplierName || retailerStore.name} across connected stores.`
-    });
-  }
-
-  // Handle Scenario 1: Cross-Store Dropshipping Orders
-  for (const [targetShopDomain, items] of supplierItemsMap.entries()) {
-    const targetStore = await db.getStoreByDomain(targetShopDomain);
-    if (!targetStore) continue;
-
+  // Create supplier orders on owner stores for Scenario 2
+  for (const [ownerDomain, { ownerStore, items }] of ownerOrdersMap.entries()) {
     await db.addLog(
       'INFO',
-      `🚀 Creating B2B Dropshipping Order on ${targetStore.name} for ${items.length} item(s)...`,
+      `🚀 Creating Supplier Order on Owner Store '${ownerStore.name}' (${ownerDomain}) for ${items.length} item(s) sold by '${sellingStore.name}'...`,
       'orders/create',
       shopDomain
     );
 
-    const result = await createSupplierFulfillmentOrder(targetStore, retailerStore, items, orderName);
+    const result = await createOrderOnOwnerStore(
+      ownerStore,
+      sellingStore,
+      items,
+      orderName,
+      order
+    );
+
     const skuListStr = items.map(i => `${i.sku} (x${i.quantity})`).join(', ');
 
     await db.recordOrderSync({
       sourceShopDomain: shopDomain,
-      targetShopDomain,
-      sourceOrderId: String(order.id),
+      targetShopDomain: ownerDomain,
+      sourceOrderId: String(order.id || 'N/A'),
       sourceOrderName: orderName,
       targetOrderId: result.orderId || null,
       targetOrderName: result.orderName || null,
@@ -789,17 +1183,9 @@ export async function processOrderCreatedWebhook(order: any, shopDomain: string,
       skus: skuListStr,
       error: result.error || null
     });
-
-    // Auto-sync inventory & tag product across connected stores if total stores > 2
-    for (const item of items) {
-      await syncInventoryAcrossStores(targetStore.shopDomain, item.sku, item.quantity);
-      await tagProductWithSellerOnStores(item.sku, retailerStore.supplierName || retailerStore.name);
-    }
   }
 
-
-  // If no items matched any rules, log as SKIPPED so every attempt appears in history
-  if (selfSaleItems.length === 0 && supplierItemsMap.size === 0) {
+  if (totalProcessedItems === 0) {
     await db.recordOrderSync({
       sourceShopDomain: shopDomain,
       targetShopDomain: 'N/A',
@@ -809,7 +1195,7 @@ export async function processOrderCreatedWebhook(order: any, shopDomain: string,
       targetOrderName: null,
       status: 'SKIPPED',
       skus: processedSkus.join(', ') || 'No SKUs',
-      error: 'No matching supplier identifier or SKUs configured for dropshipping sync.'
+      error: 'No line items had valid custom.supplier matching a connected owner store.'
     });
   }
 }

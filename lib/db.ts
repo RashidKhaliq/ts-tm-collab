@@ -336,12 +336,58 @@ class InMemoryDatabase {
   }
 
   public async getStoreBySupplierName(supplierName: string): Promise<MockStore | null> {
-    const stores = await this.getAllStores();
-    for (const store of stores) {
-      if (this.matchesStoreSupplier(store, supplierName)) {
-        return store;
-      }
+    return this.getStoreByExactSupplierName(supplierName);
+  }
+
+  public async getStoreByExactSupplierName(supplierName: string): Promise<MockStore | null> {
+    if (!supplierName || typeof supplierName !== 'string' || !supplierName.trim()) {
+      return null;
     }
+    const cleanTarget = supplierName.trim().toLowerCase();
+    const stores = await this.getAllStores();
+    const activeStores = stores.filter(s => s.isActive);
+
+    // 1. Direct match with configured supplierName
+    const matches = activeStores.filter(store => {
+      const sSupplier = (store.supplierName || '').trim().toLowerCase();
+      return sSupplier === cleanTarget;
+    });
+
+    if (matches.length === 1) {
+      return matches[0];
+    }
+
+    if (matches.length > 1) {
+      await this.addLog(
+        'WARN',
+        `⚠️ Multiple stores configured with supplier name "${supplierName}". Supplier ownership cannot be identified uniquely.`
+      );
+      return null;
+    }
+
+    // 2. Fallback match with store name or domain key
+    const fallbackMatches = activeStores.filter(store => {
+      const sName = (store.name || '').trim().toLowerCase();
+      const sDomainKey = (store.shopDomain || '').split('.')[0].trim().toLowerCase();
+      return sName === cleanTarget || sDomainKey === cleanTarget;
+    });
+
+    if (fallbackMatches.length === 1) {
+      return fallbackMatches[0];
+    }
+
+    if (fallbackMatches.length > 1) {
+      await this.addLog(
+        'WARN',
+        `⚠️ Multiple stores matched fallback supplier identifier "${supplierName}". Supplier ownership is not unique.`
+      );
+      return null;
+    }
+
+    await this.addLog(
+      'WARN',
+      `⚠️ No store found with configured supplier name matching "${supplierName}". Ownership cannot be determined.`
+    );
     return null;
   }
 
