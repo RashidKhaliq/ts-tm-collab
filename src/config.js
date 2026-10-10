@@ -1,5 +1,8 @@
 export const apiVersion = process.env.SHOPIFY_API_VERSION || '2026-10';
 export const liveWrites = process.env.LIVE_WRITES === 'true';
+export const defaultDiscountPercent = Math.max(0, Math.min(100, Number(process.env.INTERNAL_DISCOUNT_PERCENT || 99)));
+export const analyticsCacheMinutes = Math.max(1, Number(process.env.ANALYTICS_CACHE_MINUTES || 15));
+export const requiredScopes = ['read_products', 'write_products', 'read_inventory', 'write_inventory', 'read_orders', 'write_orders', 'read_reports'];
 export const norm = value => String(value ?? '').trim().toLowerCase();
 export const normalizeDomain = raw => String(raw || '')
   .trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').split('/')[0];

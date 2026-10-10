@@ -1,4 +1,4 @@
-import { liveWrites, norm, soldTag } from './config.js';
+import { defaultDiscountPercent, liveWrites, norm, soldTag } from './config.js';
 import * as shopify from './shopify.js';
 import * as db from './db.js';
 
@@ -6,11 +6,13 @@ export function isInternalOrder(order) {
   const tags=String(order.tags||'').split(',').map(s=>s.trim());
   return tags.includes('Dropshipped_Order') || tags.some(s=>s.startsWith('TS_'));
 }
+
 export function getOwner(stores, supplier) {
   const owner=stores.find(s=>norm(s.supplier)===norm(supplier));
   if (!owner) throw new Error(`No owner configured for custom.supplier=${supplier}`);
   return owner;
 }
+
 export function physicalKey(owner, sku) {
   return `${owner.key}:${norm(sku)}`;
 }
@@ -50,9 +52,39 @@ export async function processOrder(job, stores, deps={db,shopify,liveWrites}) {
   if (new Set(entries.map(x=>x.key)).size!==entries.length) throw new Error('Order repeats same physical SKU + supplier; manual review required');
   await database.claimAll(entries.map(x=>x.key),job.job_key);
 
+  const saleTag=soldTag(seller.name);
+
+  // Capture pre-sale state before making Shopify changes
+  const snapshots=[];
+  for (const entry of entries) {
+    for (const store of stores) {
+      if (!entry.variants.has(store.key)) continue;
+      const v=entry.variants.get(store.key);
+      const prevQuantities=(v.inventoryItem?.inventoryLevels?.nodes||[]).map(lvl=>({
+        locationId:lvl.location?.id,
+        quantity:lvl.quantities?.find(q=>q.name==='available')?.quantity??0
+      })).filter(q=>q.locationId);
+      snapshots.push({
+        job_key:job.job_key,
+        order_id:String(order.id),
+        selling_key:seller.key,
+        store_key:store.key,
+        product_id:v.product.id,
+        variant_id:v.id,
+        sku:entry.sku,
+        item_key:entry.key,
+        previous_status:v.product.status||'ACTIVE',
+        previous_quantities:prevQuantities,
+        sold_tag:saleTag
+      });
+    }
+  }
+  if (database.saveSnapshots) {
+    await database.saveSnapshots(snapshots);
+  }
+
   // Immediately prevent a second sale. For cross-store items, keep owner inventory
   // unchanged until orderCreate claims it. Product can be drafted first.
-  const saleTag=soldTag(seller.name);
   for (const entry of entries) {
     for (const store of stores) {
       if (!entry.variants.has(store.key)) continue;
@@ -63,6 +95,12 @@ export async function processOrder(job, stores, deps={db,shopify,liveWrites}) {
       await database.log(job.job_key,'OK',`${store.key} ${entry.sku} + ${entry.owner.supplier}: DRAFT / ${saleTag} / ${draftOnly?'owner stock held for orderCreate':'Qty 0'}`);
     }
   }
+
+  // Configurable dropship discount percentage
+  const configuredDiscount=database.getSetting ? await database.getSetting('discount_percent') : null;
+  const discountPercent=(configuredDiscount!==null && configuredDiscount!==undefined && configuredDiscount!=='')
+    ? Number(configuredDiscount)
+    : defaultDiscountPercent;
 
   // One supplier order per owner, with all of that owner's items.
   const owners=[...new Set(entries.filter(e=>e.owner.key!==seller.key).map(e=>e.owner.key))];
@@ -84,9 +122,9 @@ export async function processOrder(job, stores, deps={db,shopify,liveWrites}) {
       }
       supplierOrder=await api.createSupplierOrder(owner,seller,order,lines.map(e=>({
         variantId:e.variants.get(owner.key).id,quantity:1,sku:e.sku
-      })),tag);
+      })),tag,discountPercent);
       await database.saveSupplierOrder(job.job_key,ownerKey,supplierOrder);
-      await database.log(job.job_key,'OK',`Owner ${owner.key}: supplier order ${supplierOrder} created (99% + free shipping)`);
+      await database.log(job.job_key,'OK',`Owner ${owner.key}: supplier order ${supplierOrder} created (${discountPercent}% + free shipping)`);
     }
     // Owner order has now decremented inventory. Force any remaining available qty to 0.
     for (const e of lines) {
@@ -98,17 +136,63 @@ export async function processOrder(job, stores, deps={db,shopify,liveWrites}) {
   return {processed:entries.length,tag:saleTag};
 }
 
+export async function processCancellation(job, stores, deps={db,shopify,liveWrites}) {
+  const database=deps.db, api=deps.shopify, live=deps.liveWrites;
+  const order=job.payload;
+  if (isInternalOrder(order)) return {skipped:'Internal dropship order ignored'};
+
+  const orderId=String(job.order_id || order.id);
+  const snapshots=database.getSnapshotsForOrder ? await database.getSnapshotsForOrder(orderId) : [];
+
+  if (!snapshots || !snapshots.length) {
+    const msg=`No pre-sale snapshot found for cancelled order ${orderId}; historical orders cannot be safely auto-restored.`;
+    await database.log(job.job_key,'INFO',msg);
+    return {skipped:msg};
+  }
+
+  if (!live) {
+    await database.log(job.job_key,'INFO',`DRY RUN: Cancellation for order ${orderId}; would restore ${snapshots.length} listings across stores`);
+    return {dryRun:true,restored:snapshots.length};
+  }
+
+  for (const snapshot of snapshots) {
+    const store=stores.find(s=>s.key===snapshot.store_key);
+    if (!store) {
+      await database.log(job.job_key,'WARN',`Store ${snapshot.store_key} not configured; skipping restore for SKU ${snapshot.sku}`);
+      continue;
+    }
+    await api.restoreProductState(store,snapshot,`${job.job_key}|${snapshot.id || snapshot.item_key}`);
+    await database.log(job.job_key,'OK',`Restored ${store.key} ${snapshot.sku}: status ${snapshot.previous_status}, removed ${snapshot.sold_tag}, restored inventory`);
+  }
+
+  const itemKeys=[...new Set(snapshots.map(s=>s.item_key).filter(Boolean))];
+  if (database.releaseClaims) {
+    await database.releaseClaims(itemKeys);
+    await database.log(job.job_key,'OK',`Released internal claims for: ${itemKeys.join(', ')}`);
+  }
+
+  return {cancelled:true,restored:snapshots.length,orderId};
+}
+
 export async function runQueue(stores, limit=3) {
   await db.ensureSchema();
   const results=[];
   for (let i=0;i<Math.min(limit,10);i++) {
     const job=await db.takeJob();
     if (!job) break;
+    const isCancel=job.job_key.startsWith('CANCEL:') || (job.order_name && job.order_name.startsWith('[CANCEL]'));
     try {
-      const result=await processOrder(job,stores);
-      await db.finishJob(job.job_key,result.dryRun?'DRY_RUN':'DONE');
-      await db.log(job.job_key,'OK',JSON.stringify(result));
-      results.push({job:job.job_key,result});
+      if (isCancel) {
+        const result=await processCancellation(job,stores);
+        await db.finishJob(job.job_key,result.dryRun?'DRY_RUN':'CANCELLED');
+        await db.log(job.job_key,'OK',JSON.stringify(result));
+        results.push({job:job.job_key,result});
+      } else {
+        const result=await processOrder(job,stores);
+        await db.finishJob(job.job_key,result.dryRun?'DRY_RUN':'DONE');
+        await db.log(job.job_key,'OK',JSON.stringify(result));
+        results.push({job:job.job_key,result});
+      }
     } catch(e) {
       await db.finishJob(job.job_key,'ERROR',e.message);
       await db.log(job.job_key,'ERROR',e.message);

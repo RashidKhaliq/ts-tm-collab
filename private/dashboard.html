@@ -1,62 +1,916 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ThriftSync | Shopify Store Collaboration</title>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThriftSync v3 | Shopify Collaboration &amp; Analytics</title>
 <style>
-:root{font-family:system-ui,Segoe UI,Arial,sans-serif;color-scheme:dark;color:#e9edf7;background:#0b1120}
-*{box-sizing:border-box}body{margin:0;padding:32px;max-width:1250px;margin-inline:auto}
-header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-bottom:1px solid #293449;padding-bottom:20px;margin-bottom:24px}
-h1{font-size:25px;margin:0}h2{font-size:18px;margin:0 0 15px}p{color:#a8b5c8;line-height:1.6}
-section{padding:20px;border:1px solid #2e3a54;border-radius:12px;background:#121b2f;margin-bottom:20px;overflow:auto}
-button{border:1px solid #466da2;background:#18385e;color:#fff;padding:10px 16px;cursor:pointer;border-radius:8px}button:hover{background:#295182}
-.pill{border-radius:8px;padding:4px 8px;font-size:12px;display:inline-block;background:#263851}.ok{color:#61e4b1}.bad{color:#ff9c9c}.warn{color:#ffe18b}
-table{width:100%;border-collapse:collapse;min-width:570px;text-align:left}th,td{padding:11px;border-bottom:1px solid #243148;vertical-align:top;font-size:13px}th{color:#bac7da}code{font-family:ui-monospace,Consolas,monospace;color:#b2cdff;overflow-wrap:anywhere}
-.small{font-size:12px}.note{border-left:3px solid #6883ac;padding:5px 12px}#notice{color:#fff}
-</style></head><body>
-<header><div><h1>ThriftSync</h1><p>Order webhook → identify owner → supplier order (if reseller sale) → mark linked products sold.</p></div><div><button onclick="load()">Refresh</button> <button onclick="retry()">Retry failed orders</button></div></header>
-<section><h2>System</h2><div id="notice">Loading…</div><p class="note">No product imports. Store products are searched live via <code>SKU + custom.supplier</code> when an order is created. Only <code>orders/create</code> webhooks are processed.</p></section>
-<section><h2>Connected Shopify stores</h2><div id="stores"></div></section>
-<section><h2>Latest orders</h2><div id="jobs"></div></section>
-<section><h2>Activity &amp; errors</h2><div id="logs"></div></section>
+:root {
+  --bg: #090d16;
+  --panel: #111827;
+  --panel-border: #1f293d;
+  --panel-hover: #162035;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --success: #10b981;
+  --success-bg: rgba(16, 185, 129, 0.12);
+  --warning: #f59e0b;
+  --warning-bg: rgba(245, 158, 11, 0.12);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.12);
+  --card-bg: #0f172a;
+  --input-bg: #1e293b;
+  --border: #334155;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  padding: 16px;
+  max-width: 1360px;
+  margin-inline: auto;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding-bottom: 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--panel-border);
+}
+.header-title h1 {
+  font-size: 24px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.badge-version {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1e3a8a;
+  color: #93c5fd;
+  border: 1px solid #3b82f6;
+}
+.header-title p {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.header-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+nav.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+}
+nav.tabs button {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+nav.tabs button:hover {
+  color: var(--text);
+  background: var(--panel-border);
+}
+nav.tabs button.active {
+  color: #fff;
+  background: #1d4ed8;
+  border-color: #3b82f6;
+}
+section.tab-pane {
+  display: none;
+}
+section.tab-pane.active {
+  display: block;
+}
+.card {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.card h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.kpi-card {
+  background: var(--card-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kpi-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.kpi-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+}
+.kpi-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  background: var(--card-bg);
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  margin-bottom: 20px;
+}
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 140px;
+  min-width: 130px;
+}
+.filter-group label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+select, input[type="text"], input[type="date"], input[type="number"] {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  width: 100%;
+}
+select:focus, input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.btn {
+  background: #1e3a8a;
+  color: #fff;
+  border: 1px solid #3b82f6;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.btn:hover { background: #2563eb; }
+.btn-secondary {
+  background: var(--panel);
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+.btn-secondary:hover {
+  background: var(--panel-border);
+  color: var(--text);
+}
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+th, td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--panel-border);
+  vertical-align: middle;
+}
+th {
+  background: rgba(15, 23, 42, 0.8);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+tbody tr:hover {
+  background: var(--panel-hover);
+}
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.pill {
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-block;
+}
+.pill-ok { color: #34d399; background: var(--success-bg); border: 1px solid rgba(52, 211, 153, 0.3); }
+.pill-warn { color: #fbbf24; background: var(--warning-bg); border: 1px solid rgba(251, 191, 36, 0.3); }
+.pill-bad { color: #f87171; background: var(--danger-bg); border: 1px solid rgba(248, 113, 113, 0.3); }
+.pill-neutral { color: #94a3b8; background: rgba(148, 163, 184, 0.1); border: 1px solid rgba(148, 163, 184, 0.2); }
+.alert {
+  padding: 12px 16px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.alert-info { background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); color: #93c5fd; }
+.alert-warn { background: var(--warning-bg); border: 1px solid rgba(245, 158, 11, 0.3); color: #fcd34d; }
+.setting-box {
+  background: var(--card-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px;
+  max-width: 580px;
+}
+.preset-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 16px;
+}
+.chip {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--primary); }
+.chip.active { background: #1d4ed8; border-color: #3b82f6; color: #fff; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #93c5fd;
+  background: rgba(15, 23, 42, 0.6);
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 768px) {
+  body { padding: 12px; }
+  header { flex-direction: column; align-items: flex-start; }
+  .filter-bar { flex-direction: column; align-items: stretch; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-title">
+    <h1>ThriftSync <span class="badge-version">v3.0.0-beta.1</span></h1>
+    <p>Multi-Store Sync &middot; Pre-sale Snapshot Cancellation &middot; ShopifyQL Analytics</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-secondary" onclick="refreshCurrentTab()">Refresh</button>
+    <button class="btn" onclick="retryFailedOrders()">Retry Failed Orders</button>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button id="tab-btn-analytics" class="active" onclick="switchTab('analytics')">📊 Analytics</button>
+  <button id="tab-btn-inventory" onclick="switchTab('inventory')">📦 Inventory Sync</button>
+  <button id="tab-btn-settings" onclick="switchTab('settings')">⚙️ Settings</button>
+  <button id="tab-btn-stores" onclick="switchTab('stores')">🏪 Connected Stores</button>
+  <button id="tab-btn-orders" onclick="switchTab('orders')">🧾 Orders &amp; Queue</button>
+  <button id="tab-btn-logs" onclick="switchTab('logs')">📜 Activity Logs</button>
+</nav>
+
+<!-- TAB 1: ANALYTICS -->
+<section id="tab-analytics" class="tab-pane active">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label for="filterDate">Date Range</label>
+      <select id="filterDate" onchange="toggleCustomDates()">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="7d">Last 7 Days</option>
+        <option value="30d" selected>Last 30 Days</option>
+        <option value="90d">Last 90 Days</option>
+        <option value="custom">Custom Date</option>
+      </select>
+    </div>
+    <div class="filter-group" id="groupStartDate" style="display:none">
+      <label for="filterStartDate">Start Date</label>
+      <input type="date" id="filterStartDate">
+    </div>
+    <div class="filter-group" id="groupEndDate" style="display:none">
+      <label for="filterEndDate">End Date</label>
+      <input type="date" id="filterEndDate">
+    </div>
+    <div class="filter-group">
+      <label for="filterSellingStore">Selling Store</label>
+      <select id="filterSellingStore"><option value="ALL">All Selling Stores</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="filterOwnerStore">Owner Store</label>
+      <select id="filterOwnerStore"><option value="ALL">All Owner Stores</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="filterProductType">Product Type</label>
+      <select id="filterProductType"><option value="ALL">All Product Types</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="filterBrand">Brand</label>
+      <select id="filterBrand"><option value="ALL">All Brands</option></select>
+    </div>
+    <div class="filter-group">
+      <label for="filterGroupBy">Group By</label>
+      <select id="filterGroupBy">
+        <option value="product_type" selected>Product Type</option>
+        <option value="brand">Brand</option>
+      </select>
+    </div>
+    <div class="filter-group" style="max-width: 140px;">
+      <label>&nbsp;</label>
+      <button class="btn" style="width:100%" onclick="loadAnalytics(false)">Run Report</button>
+    </div>
+  </div>
+
+  <div id="analyticsAlert" style="display:none;" class="alert alert-info">
+    <span id="analyticsAlertText"></span>
+    <button class="btn btn-secondary" style="padding:4px 8px;font-size:11px;" onclick="loadAnalytics(true)">Force Refresh</button>
+  </div>
+
+  <div class="kpi-grid">
+    <div class="kpi-card">
+      <div class="kpi-label">Available Now</div>
+      <div class="kpi-value" id="kpiAvailable">—</div>
+      <div class="kpi-sub">Physical owner inventory</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Inventory Value</div>
+      <div class="kpi-value" id="kpiInvValue">—</div>
+      <div class="kpi-sub">Available &times; retail price</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Sold Qty</div>
+      <div class="kpi-value" id="kpiSoldQty">—</div>
+      <div class="kpi-sub">Net units sold in period</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Total Sales</div>
+      <div class="kpi-value" id="kpiTotalSales">—</div>
+      <div class="kpi-sub">Customer sales revenue</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Sell-through</div>
+      <div class="kpi-value" id="kpiSellThrough">—</div>
+      <div class="kpi-sub">Sold &divide; (Sold + Available)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Products Tracked</div>
+      <div class="kpi-value" id="kpiProductsTracked">—</div>
+      <div class="kpi-sub">Represented in catalog aggregate</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>
+      <span id="breakdownTitle">Performance Breakdown</span>
+      <span id="breakdownMeta" style="font-size:12px;font-weight:normal;color:var(--text-muted)"></span>
+    </h2>
+    <div class="table-wrap">
+      <table id="tableAnalytics">
+        <thead>
+          <tr>
+            <th id="thGroup">Product Type</th>
+            <th class="num">Available</th>
+            <th class="num">Inventory Value</th>
+            <th class="num">Sold Qty</th>
+            <th class="num">Gross Sales</th>
+            <th class="num">Total Sales</th>
+            <th class="num">Sell-through</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyAnalytics">
+          <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:30px">Loading report data&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 2: INVENTORY SYNC -->
+<section id="tab-inventory" class="tab-pane">
+  <div class="card">
+    <h2>10,000+ Catalog Inventory Architecture</h2>
+    <p style="color:var(--text-muted);margin-bottom:16px;">
+      Instead of scanning all products whenever Analytics is opened, ThriftSync walks the catalog in incremental GraphQL pages and stores summarized aggregates in Neon: <code>(Store, Supplier, Product Type, Brand &rarr; Count, Available Qty, Retail Value)</code>.
+    </p>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-label">Tracked Products</div>
+        <div class="kpi-value" id="invTotalProducts">—</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Available Units</div>
+        <div class="kpi-value" id="invTotalUnits">—</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Total Retail Value</div>
+        <div class="kpi-value" id="invTotalValue">—</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-label">Last Synced</div>
+        <div class="kpi-value" id="invLastSynced" style="font-size:15px;padding-top:6px;">—</div>
+      </div>
+    </div>
+
+    <div style="margin-top:10px;">
+      <button id="btnSyncInventory" class="btn" onclick="triggerInventorySync()">
+        <span>🔄 Sync Inventory Now</span>
+      </button>
+      <span id="syncProgressText" style="margin-left:12px;font-size:13px;color:var(--text-muted)"></span>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 3: SETTINGS -->
+<section id="tab-settings" class="tab-pane">
+  <div class="card">
+    <h2>Internal Supplier Order Settings</h2>
+    <p style="color:var(--text-muted);margin-bottom:16px;">
+      Configure the automatic percentage discount applied to internal owner supplier orders (dropship orders). Stored in Neon database &mdash; changing it does not require a Vercel redeploy.
+    </p>
+
+    <div class="setting-box">
+      <label style="font-size:12px;font-weight:600;text-transform:uppercase;color:var(--text-muted)">Discount Percentage</label>
+      <div class="preset-chips">
+        <button type="button" class="chip" onclick="setDiscountPreset(99)">99%</button>
+        <button type="button" class="chip" onclick="setDiscountPreset(95)">95%</button>
+        <button type="button" class="chip" onclick="setDiscountPreset(90)">90%</button>
+        <button type="button" class="chip" onclick="setDiscountPreset(80)">80%</button>
+        <button type="button" class="chip" onclick="setDiscountPreset(50)">50%</button>
+        <button type="button" class="chip" onclick="setDiscountPreset(0)">0%</button>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;">
+        <input type="number" id="inputDiscount" min="0" max="100" style="width:120px;" value="99">
+        <span style="font-weight:bold">%</span>
+        <button class="btn" onclick="saveDiscountSetting()">Save Setting</button>
+      </div>
+      <p id="discountSaveResult" style="font-size:12px;margin-top:10px;color:#10b981;"></p>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 4: CONNECTED STORES -->
+<section id="tab-stores" class="tab-pane">
+  <div class="card">
+    <h2>Connected Shopify Stores &amp; Permissions</h2>
+    <p style="color:var(--text-muted);margin-bottom:14px;">
+      Verifies live Shopify Admin API connectivity and required scopes including <code>read_reports</code> for ShopifyQL.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Store</th>
+            <th>Domain</th>
+            <th>Supplier Code</th>
+            <th>Connection Status</th>
+            <th>Scopes &amp; Diagnostics</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyStores">
+          <tr><td colspan="5" style="text-align:center;padding:20px;color:var(--text-muted)">Checking stores&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 5: ORDERS & QUEUE -->
+<section id="tab-orders" class="tab-pane">
+  <div class="card">
+    <h2>
+      <span>Recent Webhook Jobs (Create &amp; Cancel)</span>
+      <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px;" onclick="loadStatus()">Refresh Queue</button>
+    </h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Selling Store</th>
+            <th>State</th>
+            <th>Attempts</th>
+            <th>Updated</th>
+            <th>Error / Details</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyJobs">
+          <tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">Loading jobs&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- TAB 6: ACTIVITY LOGS -->
+<section id="tab-logs" class="tab-pane">
+  <div class="card">
+    <h2>System Event Logs</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Job Key</th>
+            <th>Level</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="tbodyLogs">
+          <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-muted)">Loading logs&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 <script>
-const $=id=>document.getElementById(id);
-const escapeHtml=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const fmt=d=>d?new Date(d).toLocaleString():'—';
-const table=(heads,rows)=>'<table><thead><tr>'+heads.map(h=>'<th>'+escapeHtml(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+row.map(cell=>'<td>'+cell+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
-async function fetchJson(url, options) {
- const response=await fetch(url, {...(options||{}), credentials:'same-origin'});
- const body=await response.text();
- const contentType=response.headers.get('content-type')||'';
- let data;
- if(contentType.includes('application/json')) {
-   try { data=JSON.parse(body); }
-   catch { throw new Error(`HTTP ${response.status} ${url}: server returned invalid JSON`); }
- } else {
-   const snippet=body.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,180);
-   throw new Error(`HTTP ${response.status} ${url}: expected JSON, received ${contentType||'unknown content type'}${snippet?' — '+snippet:''}`);
- }
- if(!response.ok)throw new Error(`HTTP ${response.status} ${url}: ${data?.error||response.statusText}`);
- return data;
+const $ = id => document.getElementById(id);
+const escapeHtml = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtDate = d => d ? new Date(d).toLocaleString() : '—';
+const fmtNum = n => Number(n || 0).toLocaleString();
+const fmtCurrency = n => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+
+let cachedFilterOptions = null;
+let currentDiscount = 99;
+
+function switchTab(name) {
+  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('section.tab-pane').forEach(s => s.classList.remove('active'));
+  const btn = $('tab-btn-' + name);
+  const pane = $('tab-' + name);
+  if (btn) btn.classList.add('active');
+  if (pane) pane.classList.add('active');
+
+  if (name === 'analytics') loadAnalytics(false);
+  if (name === 'inventory') loadInventoryStatus();
+  if (name === 'settings') loadSettings();
+  if (name === 'stores' || name === 'orders' || name === 'logs') loadStatus();
 }
-async function load(){
- $('notice').textContent='Checking database and Shopify access…';
- try{
-  const data=await fetchJson('/api/status');
-  $('notice').innerHTML=`Writes enabled: <strong class="${data.liveWrites?'warn':'ok'}">${data.liveWrites?'YES. LIVE SHOPIFY CHANGES':'NO. DRY RUN ONLY'}</strong> · Configured stores: ${data.stores.length}`;
-  $('stores').innerHTML=table(['Store','Shopify domain','Supplier code','API access / scopes'],data.stores.map(s=>[
-   escapeHtml(s.name),`<code>${escapeHtml(s.domain)}</code>`,escapeHtml(s.supplier),
-   s.connected?`<span class="ok">Connected</span>${s.missingScopes?.length?`<p class="warn small">Missing permissions: ${escapeHtml(s.missingScopes.join(', '))}</p>`:''}`:`<span class="bad">Disconnected: ${escapeHtml(s.error)}</span>`]));
-  $('jobs').innerHTML=table(['Order','Selling store','State','Attempts','Updated','Error'],data.jobs.map(j=>[
-   `<code>${escapeHtml(j.order_name)}</code>`,escapeHtml(j.selling_key),
-   `<span class="${j.state==='DONE'?'ok':j.state==='ERROR'?'bad':'warn'}">${escapeHtml(j.state)}</span>`,
-   String(j.attempts),fmt(j.updated_at),escapeHtml(j.last_error||'') ]));
-  $('logs').innerHTML=table(['When','Job','Level','Event'],data.logs.map(l=>[fmt(l.created_at),`<code>${escapeHtml(l.job_key||'')}</code>`,escapeHtml(l.level),escapeHtml(l.message)]));
- } catch(e){$('notice').textContent='ERROR: '+e.message;}
+
+function refreshCurrentTab() {
+  const activePane = document.querySelector('section.tab-pane.active');
+  if (!activePane) return;
+  const id = activePane.id.replace('tab-', '');
+  switchTab(id);
 }
-async function retry(){
- if(!confirm('Retry failed orders? This may write to Shopify when LIVE_WRITES=true.'))return;
- try {const data=await fetchJson('/api/retry',{method:'POST'});alert('Queued '+data.retried+' failed orders');}
- catch(error) {alert('Retry failed: '+error.message);}
- await load();
+
+function toggleCustomDates() {
+  const isCustom = $('filterDate').value === 'custom';
+  $('groupStartDate').style.display = isCustom ? 'flex' : 'none';
+  $('groupEndDate').style.display = isCustom ? 'flex' : 'none';
 }
-load();
-</script></body></html>
+
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, { ...options, credentials: 'same-origin' });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); }
+  catch { throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`); }
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+// ---------------- ANALYTICS ----------------
+async function loadFilterOptions() {
+  if (cachedFilterOptions) return cachedFilterOptions;
+  try {
+    const data = await fetchJson('/api/analytics/filters');
+    cachedFilterOptions = data;
+
+    // Populate Selling Store
+    const selStore = $('filterSellingStore');
+    selStore.innerHTML = '<option value="ALL">All Selling Stores</option>' +
+      (data.stores || []).map(s => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.name)} (${escapeHtml(s.key)})</option>`).join('');
+
+    // Populate Owner Store
+    const ownerStore = $('filterOwnerStore');
+    ownerStore.innerHTML = '<option value="ALL">All Owner Stores</option>' +
+      (data.stores || []).map(s => `<option value="${escapeHtml(s.key)}">${escapeHtml(s.name)} [${escapeHtml(s.supplier)}]</option>`).join('');
+
+    // Populate Product Types
+    const pt = $('filterProductType');
+    pt.innerHTML = '<option value="ALL">All Product Types</option>' +
+      (data.productTypes || []).map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+
+    // Populate Brands
+    const brand = $('filterBrand');
+    brand.innerHTML = '<option value="ALL">All Brands</option>' +
+      (data.brands || []).map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+
+    return data;
+  } catch (err) {
+    console.error('Failed to load filter options:', err);
+  }
+}
+
+async function loadAnalytics(forceRefresh = false) {
+  await loadFilterOptions();
+  const dateVal = $('filterDate').value;
+  const startDate = $('filterStartDate').value;
+  const endDate = $('filterEndDate').value;
+  const sellingStore = $('filterSellingStore').value;
+  const ownerStore = $('filterOwnerStore').value;
+  const productType = $('filterProductType').value;
+  const brand = $('filterBrand').value;
+  const groupBy = $('filterGroupBy').value;
+
+  const params = new URLSearchParams({
+    date: dateVal,
+    sellingStore,
+    ownerStore,
+    productType,
+    brand,
+    groupBy
+  });
+  if (dateVal === 'custom' && startDate) params.set('startDate', startDate);
+  if (dateVal === 'custom' && endDate) params.set('endDate', endDate);
+  if (forceRefresh) params.set('refresh', 'true');
+
+  $('tbodyAnalytics').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:25px;color:var(--text-muted);"><span class="spinner"></span> Querying ShopifyQL and Inventory aggregates&hellip;</td></tr>`;
+
+  try {
+    const data = await fetchJson('/api/analytics?' + params.toString());
+    const k = data.kpi || {};
+
+    $('kpiAvailable').textContent = fmtNum(k.availableNow);
+    $('kpiInvValue').textContent = fmtCurrency(k.inventoryValue);
+    $('kpiSoldQty').textContent = fmtNum(k.soldQty);
+    $('kpiTotalSales').textContent = fmtCurrency(k.totalSales);
+    $('kpiSellThrough').textContent = k.sellThroughFormatted || '0.0%';
+    $('kpiProductsTracked').textContent = fmtNum(k.productsTracked);
+
+    $('thGroup').textContent = groupBy === 'brand' ? 'Brand' : 'Product Type';
+    $('breakdownTitle').textContent = (groupBy === 'brand' ? 'Brand' : 'Product Type') + ' Performance';
+    $('breakdownMeta').textContent = `Period: ${data.filters.since} → ${data.filters.until} ${data.cached ? '(Cached)' : '(Live)'}`;
+
+    const alert = $('analyticsAlert');
+    if (data.cached) {
+      alert.style.display = 'flex';
+      $('analyticsAlertText').textContent = 'Showing cached ShopifyQL results (15 min cache).';
+    } else if (data.warnings && data.warnings.length) {
+      alert.style.display = 'flex';
+      $('analyticsAlertText').textContent = 'Note: ' + data.warnings.map(w => w.error || w.errors?.join(', ')).join('; ');
+    } else {
+      alert.style.display = 'none';
+    }
+
+    const rows = data.breakdown || [];
+    if (!rows.length) {
+      $('tbodyAnalytics').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted);">No sales or inventory found for the selected filters.</td></tr>`;
+      return;
+    }
+
+    $('tbodyAnalytics').innerHTML = rows.map(r => `
+      <tr>
+        <td style="font-weight:600;">${escapeHtml(r.group)}</td>
+        <td class="num">${fmtNum(r.available)}</td>
+        <td class="num">${fmtCurrency(r.inventoryValue)}</td>
+        <td class="num" style="font-weight:600;color:#93c5fd;">${fmtNum(r.soldQty)}</td>
+        <td class="num">${fmtCurrency(r.grossSales)}</td>
+        <td class="num" style="font-weight:600;color:#34d399;">${fmtCurrency(r.totalSales)}</td>
+        <td class="num">
+          <span class="pill ${r.sellThroughPercent > 20 ? 'pill-ok' : r.sellThroughPercent > 0 ? 'pill-warn' : 'pill-neutral'}">
+            ${r.sellThroughFormatted}
+          </span>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    $('tbodyAnalytics').innerHTML = `<tr><td colspan="7" style="text-align:center;color:#f87171;padding:25px;">Error: ${escapeHtml(err.message)}</td></tr>`;
+  }
+}
+
+// ---------------- INVENTORY SYNC ----------------
+async function loadInventoryStatus() {
+  try {
+    const res = await fetchJson('/api/inventory/status');
+    const s = res.status || {};
+    $('invTotalProducts').textContent = fmtNum(s.total_products);
+    $('invTotalUnits').textContent = fmtNum(s.total_qty);
+    $('invTotalValue').textContent = fmtCurrency(s.total_retail_value);
+    $('invLastSynced').textContent = fmtDate(s.last_synced_at);
+  } catch (err) {
+    console.error('Inventory status failed:', err);
+  }
+}
+
+async function triggerInventorySync() {
+  const btn = $('btnSyncInventory');
+  const txt = $('syncProgressText');
+  btn.disabled = true;
+  txt.innerHTML = '<span class="spinner"></span> Walking store catalog pages and updating aggregates…';
+  try {
+    const res = await fetchJson('/api/inventory/sync', { method: 'POST' });
+    txt.textContent = 'Sync completed successfully!';
+    await loadInventoryStatus();
+    cachedFilterOptions = null; // force reload filters on next report
+  } catch (err) {
+    txt.textContent = 'Sync failed: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------------- SETTINGS ----------------
+async function loadSettings() {
+  try {
+    const res = await fetchJson('/api/settings');
+    currentDiscount = res.discountPercent ?? 99;
+    $('inputDiscount').value = currentDiscount;
+    highlightChip(currentDiscount);
+  } catch (err) {
+    console.error('Settings load failed:', err);
+  }
+}
+
+function setDiscountPreset(pct) {
+  $('inputDiscount').value = pct;
+  highlightChip(pct);
+}
+
+function highlightChip(pct) {
+  document.querySelectorAll('.preset-chips .chip').forEach(c => {
+    c.classList.toggle('active', c.textContent.trim() === pct + '%');
+  });
+}
+
+async function saveDiscountSetting() {
+  const val = Number($('inputDiscount').value);
+  const result = $('discountSaveResult');
+  result.textContent = 'Saving…';
+  try {
+    const res = await fetchJson('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ discountPercent: val })
+    });
+    result.textContent = `Saved! Internal supplier discount set to ${res.discountPercent}%.`;
+    currentDiscount = res.discountPercent;
+    highlightChip(currentDiscount);
+  } catch (err) {
+    result.style.color = '#ef4444';
+    result.textContent = 'Save failed: ' + err.message;
+  }
+}
+
+// ---------------- STATUS, STORES & ORDERS ----------------
+async function loadStatus() {
+  try {
+    const data = await fetchJson('/api/status');
+    currentDiscount = data.discountPercent ?? 99;
+    $('inputDiscount').value = currentDiscount;
+    highlightChip(currentDiscount);
+
+    // Stores table
+    $('tbodyStores').innerHTML = (data.stores || []).map(s => {
+      const connPill = s.connected
+        ? '<span class="pill pill-ok">Connected</span>'
+        : `<span class="pill pill-bad">Disconnected: ${escapeHtml(s.error)}</span>`;
+      const scopes = s.missingScopes?.length
+        ? `<div style="margin-top:4px;color:#fbbf24;font-size:11px;">Missing scopes: ${escapeHtml(s.missingScopes.join(', '))}</div>`
+        : '<span style="color:#34d399;font-size:11px;">All required scopes granted (including read_reports)</span>';
+      return `
+        <tr>
+          <td><strong>${escapeHtml(s.name)}</strong></td>
+          <td><code>${escapeHtml(s.domain)}</code></td>
+          <td><code>${escapeHtml(s.supplier)}</code></td>
+          <td>${connPill}</td>
+          <td>${scopes}</td>
+        </tr>
+      `;
+    }).join('');
+
+    // Jobs table
+    $('tbodyJobs').innerHTML = (data.jobs || []).map(j => {
+      let statePill = '<span class="pill pill-warn">' + escapeHtml(j.state) + '</span>';
+      if (j.state === 'DONE') statePill = '<span class="pill pill-ok">DONE</span>';
+      if (j.state === 'CANCELLED') statePill = '<span class="pill pill-ok">CANCELLED (Restored)</span>';
+      if (j.state === 'ERROR') statePill = '<span class="pill pill-bad">ERROR</span>';
+      if (j.state === 'DRY_RUN') statePill = '<span class="pill pill-neutral">DRY_RUN</span>';
+
+      return `
+        <tr>
+          <td><code>${escapeHtml(j.order_name)}</code></td>
+          <td>${escapeHtml(j.selling_key)}</td>
+          <td>${statePill}</td>
+          <td>${j.attempts}</td>
+          <td>${fmtDate(j.updated_at)}</td>
+          <td style="color:${j.last_error ? '#f87171' : 'var(--text-muted)'};max-width:280px;word-break:break-word;">
+            ${escapeHtml(j.last_error || '—')}
+          </td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted)">No orders queued yet.</td></tr>';
+
+    // Logs table
+    $('tbodyLogs').innerHTML = (data.logs || []).map(l => {
+      let lvlPill = '<span class="pill pill-neutral">' + escapeHtml(l.level) + '</span>';
+      if (l.level === 'OK') lvlPill = '<span class="pill pill-ok">OK</span>';
+      if (l.level === 'ERROR') lvlPill = '<span class="pill pill-bad">ERROR</span>';
+      if (l.level === 'WARN') lvlPill = '<span class="pill pill-warn">WARN</span>';
+
+      return `
+        <tr>
+          <td>${fmtDate(l.created_at)}</td>
+          <td><code>${escapeHtml(l.job_key || '')}</code></td>
+          <td>${lvlPill}</td>
+          <td style="max-width:500px;word-break:break-word;">${escapeHtml(l.message)}</td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-muted)">No activity logs yet.</td></tr>';
+
+  } catch (err) {
+    console.error('Status load failed:', err);
+  }
+}
+
+async function retryFailedOrders() {
+  if (!confirm('Retry all failed orders? This will reprocess them through ThriftSync.')) return;
+  try {
+    const res = await fetchJson('/api/retry', { method: 'POST' });
+    alert(`Queued ${res.retried} failed order(s) for reprocessing.`);
+    await loadStatus();
+  } catch (err) {
+    alert('Retry failed: ' + err.message);
+  }
+}
+
+// Initial bootstrap
+window.addEventListener('DOMContentLoaded', () => {
+  loadAnalytics(false);
+  loadStatus();
+});
+</script>
+</body>
+</html>

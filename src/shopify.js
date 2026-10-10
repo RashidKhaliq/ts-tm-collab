@@ -43,28 +43,34 @@ export async function graphql(store, gql, variables={}) {
   if (body.errors?.length) throw new ShopifyError(store.key,'GraphQL',body.errors.map(e=>e.message).join('; '));
   return body.data;
 }
+
 export function assertNoUserErrors(payload, label) {
   if (payload?.userErrors?.length) throw new Error(`${label}: ` + payload.userErrors.map(e=>e.message).join('; '));
 }
+
 export async function testStore(store) {
   const data=await graphql(store,`query { shop { name myshopifyDomain currencyCode } currentAppInstallation { accessScopes { handle } } }`);
   return {
     shop:data.shop, scopes:(data.currentAppInstallation?.accessScopes||[]).map(s=>s.handle)
   };
 }
+
 export async function fetchSourceVariant(store, variantId) {
   const id=`gid://shopify/ProductVariant/${String(variantId).replace(/^gid:\/\/shopify\/ProductVariant\//,'')}`;
   const data=await graphql(store,`query($id:ID!){ node(id:$id){ ... on ProductVariant { ${VARIANT_FIELDS} } } }`,{id});
   return data.node?.sku ? data.node : null;
 }
+
 function normalizedVariant(v) {
   return { ...v, supplier:norm(v.product?.metafield?.value) };
 }
+
 export function makeVariantSearch(sku) {
   // Shopify search grammar: quote and escape for exact SKU matching in JS afterward.
   const val=String(sku).replace(/[\\"]/g,'\\$&');
   return `sku:"${val}"`;
 }
+
 export async function findMatchingVariant(store, sku, supplier) {
   const matches=[];
   let cursor=null;
@@ -87,6 +93,7 @@ export async function findMatchingVariant(store, sku, supplier) {
   }
   throw new Error(`${store.key}: Variant search pagination limit exceeded for ${sku}; refusing unsafe match`);
 }
+
 export async function markSold(store, variant, saleTag, key, options={}) {
   const product=variant.product;
   if (product.status!=='DRAFT') {
@@ -126,14 +133,83 @@ export async function markSold(store, variant, saleTag, key, options={}) {
   return {status:'DRAFT',quantity:0};
 }
 
+export async function removeTags(store, productId, tags) {
+  if (!tags || !tags.length) return;
+  const data = await graphql(store, `mutation($id:ID!,$tags:[String!]!){
+    tagsRemove(id:$id,tags:$tags){ node{id} userErrors{message} }
+  }`, { id: productId, tags });
+  assertNoUserErrors(data.tagsRemove, 'Remove tags');
+  return data.tagsRemove;
+}
+
+export async function restoreProductState(store, snapshot, idempotencyKey = '') {
+  // 1. Restore product status
+  if (snapshot.previous_status && snapshot.previous_status !== 'DRAFT') {
+    const data = await graphql(store, `mutation($product:ProductUpdateInput!){
+      productUpdate(product:$product){ product{id status} userErrors{message} }
+    }`, { product: { id: snapshot.product_id, status: snapshot.previous_status } });
+    assertNoUserErrors(data.productUpdate, 'Restore product status');
+  }
+
+  // 2. Remove Soldby_* tag
+  if (snapshot.sold_tag) {
+    await removeTags(store, snapshot.product_id, [snapshot.sold_tag]);
+  }
+
+  // 3. Restore inventory quantity to recorded pre-sale level
+  const prevQuantities = Array.isArray(snapshot.previous_quantities) ? snapshot.previous_quantities : [];
+  if (prevQuantities.length) {
+    const currentVariant = await fetchSourceVariant(store, snapshot.variant_id);
+    const item = currentVariant?.inventoryItem;
+    if (item?.tracked) {
+      const qtys = [];
+      for (const prev of prevQuantities) {
+        const level = item.inventoryLevels?.nodes?.find(l => l.location.id === prev.locationId);
+        const currentQty = level?.quantities?.find(q => q.name === 'available')?.quantity ?? 0;
+        if (currentQty !== prev.quantity) {
+          qtys.push({
+            inventoryItemId: item.id,
+            locationId: prev.locationId,
+            quantity: prev.quantity,
+            changeFromQuantity: currentQty
+          });
+        }
+      }
+      if (qtys.length) {
+        const mutation = `mutation($input:InventorySetQuantitiesInput!,$idempotencyKey:String!){
+          inventorySetQuantities(input:$input) @idempotent(key:$idempotencyKey) {
+            userErrors { code message } inventoryAdjustmentGroup { createdAt }
+          }
+        }`;
+        for (const q of qtys) {
+          const hashed = crypto.createHash('sha256').update(`RESTORE|${idempotencyKey}|${store.key}|${q.inventoryItemId}|${q.locationId}|${q.quantity}`).digest('hex');
+          const uuid = `${hashed.slice(0,8)}-${hashed.slice(8,12)}-4${hashed.slice(13,16)}-a${hashed.slice(17,20)}-${hashed.slice(20,32)}`;
+          const input = {
+            name: 'available',
+            reason: 'correction',
+            referenceDocumentUri: `gid://thriftsync/Restore/${hashed.slice(0,24)}`,
+            quantities: [q]
+          };
+          const res = await graphql(store, mutation, { input, idempotencyKey: uuid });
+          assertNoUserErrors(res.inventorySetQuantities, 'Restore inventory quantity');
+        }
+      }
+    }
+  }
+
+  return { restored: true };
+}
+
 export function referenceTag(storeKey,orderId,ownerKey) {
   return 'TS_' + crypto.createHash('sha256').update(`${storeKey}:${orderId}:${ownerKey}`).digest('hex').slice(0,20);
 }
+
 export async function findExistingSupplierOrder(store, reference) {
   const result=await graphql(store,`query($q:String!){orders(first:2,query:$q){nodes{id tags}}}`,{q:`tag:${reference}`});
   return result.orders.nodes.find(o=>o.tags.includes(reference))?.id||null;
 }
-function noteForOrder(seller, originalOrder, ownerKey, lines) {
+
+function noteForOrder(seller, originalOrder, ownerKey, lines, discountPercent = 99) {
   const c=originalOrder.customer||{};
   const a=originalOrder.shipping_address||originalOrder.billing_address||{};
   const name=[c.first_name||a.first_name,c.last_name||a.last_name].filter(Boolean).join(' ');
@@ -148,24 +224,28 @@ function noteForOrder(seller, originalOrder, ownerKey, lines) {
     `Original customer address: ${[a.address1,a.address2,a.city,a.province,a.zip,a.country].filter(Boolean).join(', ')||'Not provided'}`,
     `Customer order items: ${lines.map(l=>`${l.sku} x ${l.quantity}`).join(', ')}`,
     `Owner supplier: ${ownerKey}`,
-    'Internal discount: 99%',
+    `Internal discount: ${discountPercent}%`,
     'Internal shipping: FREE (0)',
     'Owner supplies item to selling store. Selling store handles buyer delivery.'
   ].join('\n').slice(0,5000);
 }
-export async function createSupplierOrder(owner, seller, originalOrder, lines, ref) {
+
+export async function createSupplierOrder(owner, seller, originalOrder, lines, ref, discountPercent = 99) {
   const shop=await testStore(owner);
   const money={amount:'0.00',currencyCode:shop.shop.currencyCode};
   const addr=Object.fromEntries(Object.entries(seller.address).filter(([,value])=>Boolean(value)));
+  const pct = Number.isFinite(discountPercent) ? discountPercent : 99;
   const input={
     lineItems:lines.map(({variantId,quantity})=>({variantId,quantity})),
-    note:noteForOrder(seller,originalOrder,owner.key,lines),
+    note:noteForOrder(seller,originalOrder,owner.key,lines,pct),
     tags:['Dropshipped_Order',ref],
     sourceIdentifier:`${seller.domain}:${originalOrder.id}`,
-    discountCode:{itemPercentageDiscountCode:{percentage:99,code:'THRIFTSYNC_INTERNAL_99'}},
     shippingLines:[{title:'Free Internal Shipping',priceSet:{shopMoney:money}}],
     financialStatus:'PENDING'
   };
+  if (pct > 0) {
+    input.discountCode = { itemPercentageDiscountCode: { percentage: pct, code: `THRIFTSYNC_INTERNAL_${pct}` } };
+  }
   if (seller.ownerEmail) input.email=seller.ownerEmail;
   if (seller.ownerPhone) input.phone=seller.ownerPhone;
   if (addr.address1 && addr.city && addr.country) input.shippingAddress=addr;
@@ -175,4 +255,50 @@ export async function createSupplierOrder(owner, seller, originalOrder, lines, r
   assertNoUserErrors(data.orderCreate,'Create dropship order');
   if (!data.orderCreate.order?.id) throw new Error('Shopify did not return supplier order ID');
   return data.orderCreate.order.id;
+}
+
+export async function queryShopifyQL(store, qlQuery) {
+  const gql = `query($q: String!) {
+    shopifyqlQuery(query: $q) {
+      tableData {
+        columns { name dataType displayName }
+        rows
+      }
+      parseErrors { code message range { start { line column } end { line column } } }
+    }
+  }`;
+  const data = await graphql(store, gql, { q: qlQuery });
+  return data.shopifyqlQuery;
+}
+
+export async function fetchCatalogPage(store, cursor = null, pageSize = 50) {
+  const gql = `query($cursor: String, $pageSize: Int!) {
+    products(first: $pageSize, after: $cursor) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id
+        productType
+        vendor
+        supplier: metafield(namespace: "custom", key: "supplier") { value }
+        brand: metafield(namespace: "custom", key: "brand") { value }
+        variants(first: 50) {
+          nodes {
+            id
+            price
+            inventoryItem {
+              tracked
+              inventoryLevels(first: 10) {
+                nodes {
+                  location { id }
+                  quantities(names: ["available"]) { name quantity }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`;
+  const data = await graphql(store, gql, { cursor, pageSize });
+  return data.products;
 }
