@@ -1,7 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { waitUntil } from '@vercel/functions';
 import { getStores, liveWrites } from './config.js';
 import * as db from './db.js';
@@ -12,7 +11,8 @@ const app=express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 const stores=()=>getStores();
-const publicPath=path.join(path.dirname(fileURLToPath(import.meta.url)),'../public');
+// Keep the admin dashboard out of Vercel's public/ folder: static files bypass Express authentication.
+const dashboardHtml=readFileSync(new URL('../private/dashboard.html', import.meta.url), 'utf8');
 
 export function verifyHmac(raw, secret, header) {
   if (!secret || !header) return false;
@@ -21,14 +21,18 @@ export function verifyHmac(raw, secret, header) {
   return received.length===calculated.length && crypto.timingSafeEqual(received,calculated);
 }
 function basicAuth(req,res,next) {
+  const isApi = req.path.startsWith('/api/');
   const user=process.env.ADMIN_USER, pass=process.env.ADMIN_PASSWORD;
-  if (!user || !pass || pass==='replace-with-a-strong-password') return res.status(503).send('Configure ADMIN_USER and ADMIN_PASSWORD');
+  if (!user || !pass || pass==='replace-with-a-strong-password') {
+    const message='ADMIN_USER or ADMIN_PASSWORD missing/placeholder in this Vercel deployment. Set both environment variables and redeploy.';
+    return isApi ? res.status(503).json({error:message}) : res.status(503).type('text').send(message);
+  }
   const expected='Basic '+Buffer.from(`${user}:${pass}`).toString('base64');
   const supplied=String(req.headers.authorization||'');
   const a=Buffer.from(expected),b=Buffer.from(supplied);
   if (a.length!==b.length || !crypto.timingSafeEqual(a,b)) {
     res.set('WWW-Authenticate','Basic realm="ThriftSync"');
-    return res.status(401).send('Login required');
+    return isApi ? res.status(401).json({error:'Admin authentication required. Sign in or refresh browser credentials.'}) : res.status(401).send('Login required');
   }
   next();
 }
@@ -88,6 +92,6 @@ app.post('/api/retry',basicAuth,async(req,res)=>{
   try {await db.ensureSchema();res.json({retried:await db.retryFailed()});queueWork();}
   catch(e){res.status(500).json({error:e.message});}
 });
-app.get('/',basicAuth,(req,res)=>res.sendFile(path.join(publicPath,'index.html')));
+app.get('/',basicAuth,(req,res)=>res.status(200).type('html').send(dashboardHtml));
 app.get('/health',(req,res)=>res.status(200).json({ok:true,service:'ThriftSync'}));
 export default app;

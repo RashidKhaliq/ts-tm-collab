@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ThriftSync | Shopify Store Collaboration</title>
+<style>
+:root{font-family:system-ui,Segoe UI,Arial,sans-serif;color-scheme:dark;color:#e9edf7;background:#0b1120}
+*{box-sizing:border-box}body{margin:0;padding:32px;max-width:1250px;margin-inline:auto}
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border-bottom:1px solid #293449;padding-bottom:20px;margin-bottom:24px}
+h1{font-size:25px;margin:0}h2{font-size:18px;margin:0 0 15px}p{color:#a8b5c8;line-height:1.6}
+section{padding:20px;border:1px solid #2e3a54;border-radius:12px;background:#121b2f;margin-bottom:20px;overflow:auto}
+button{border:1px solid #466da2;background:#18385e;color:#fff;padding:10px 16px;cursor:pointer;border-radius:8px}button:hover{background:#295182}
+.pill{border-radius:8px;padding:4px 8px;font-size:12px;display:inline-block;background:#263851}.ok{color:#61e4b1}.bad{color:#ff9c9c}.warn{color:#ffe18b}
+table{width:100%;border-collapse:collapse;min-width:570px;text-align:left}th,td{padding:11px;border-bottom:1px solid #243148;vertical-align:top;font-size:13px}th{color:#bac7da}code{font-family:ui-monospace,Consolas,monospace;color:#b2cdff;overflow-wrap:anywhere}
+.small{font-size:12px}.note{border-left:3px solid #6883ac;padding:5px 12px}#notice{color:#fff}
+</style></head><body>
+<header><div><h1>ThriftSync</h1><p>Order webhook → identify owner → supplier order (if reseller sale) → mark linked products sold.</p></div><div><button onclick="load()">Refresh</button> <button onclick="retry()">Retry failed orders</button></div></header>
+<section><h2>System</h2><div id="notice">Loading…</div><p class="note">No product imports. Store products are searched live via <code>SKU + custom.supplier</code> when an order is created. Only <code>orders/create</code> webhooks are processed.</p></section>
+<section><h2>Connected Shopify stores</h2><div id="stores"></div></section>
+<section><h2>Latest orders</h2><div id="jobs"></div></section>
+<section><h2>Activity &amp; errors</h2><div id="logs"></div></section>
+<script>
+const $=id=>document.getElementById(id);
+const escapeHtml=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=d=>d?new Date(d).toLocaleString():'—';
+const table=(heads,rows)=>'<table><thead><tr>'+heads.map(h=>'<th>'+escapeHtml(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(row=>'<tr>'+row.map(cell=>'<td>'+cell+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+async function fetchJson(url, options) {
+ const response=await fetch(url, {...(options||{}), credentials:'same-origin'});
+ const body=await response.text();
+ const contentType=response.headers.get('content-type')||'';
+ let data;
+ if(contentType.includes('application/json')) {
+   try { data=JSON.parse(body); }
+   catch { throw new Error(`HTTP ${response.status} ${url}: server returned invalid JSON`); }
+ } else {
+   const snippet=body.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,180);
+   throw new Error(`HTTP ${response.status} ${url}: expected JSON, received ${contentType||'unknown content type'}${snippet?' — '+snippet:''}`);
+ }
+ if(!response.ok)throw new Error(`HTTP ${response.status} ${url}: ${data?.error||response.statusText}`);
+ return data;
+}
+async function load(){
+ $('notice').textContent='Checking database and Shopify access…';
+ try{
+  const data=await fetchJson('/api/status');
+  $('notice').innerHTML=`Writes enabled: <strong class="${data.liveWrites?'warn':'ok'}">${data.liveWrites?'YES. LIVE SHOPIFY CHANGES':'NO. DRY RUN ONLY'}</strong> · Configured stores: ${data.stores.length}`;
+  $('stores').innerHTML=table(['Store','Shopify domain','Supplier code','API access / scopes'],data.stores.map(s=>[
+   escapeHtml(s.name),`<code>${escapeHtml(s.domain)}</code>`,escapeHtml(s.supplier),
+   s.connected?`<span class="ok">Connected</span>${s.missingScopes?.length?`<p class="warn small">Missing permissions: ${escapeHtml(s.missingScopes.join(', '))}</p>`:''}`:`<span class="bad">Disconnected: ${escapeHtml(s.error)}</span>`]));
+  $('jobs').innerHTML=table(['Order','Selling store','State','Attempts','Updated','Error'],data.jobs.map(j=>[
+   `<code>${escapeHtml(j.order_name)}</code>`,escapeHtml(j.selling_key),
+   `<span class="${j.state==='DONE'?'ok':j.state==='ERROR'?'bad':'warn'}">${escapeHtml(j.state)}</span>`,
+   String(j.attempts),fmt(j.updated_at),escapeHtml(j.last_error||'') ]));
+  $('logs').innerHTML=table(['When','Job','Level','Event'],data.logs.map(l=>[fmt(l.created_at),`<code>${escapeHtml(l.job_key||'')}</code>`,escapeHtml(l.level),escapeHtml(l.message)]));
+ } catch(e){$('notice').textContent='ERROR: '+e.message;}
+}
+async function retry(){
+ if(!confirm('Retry failed orders? This may write to Shopify when LIVE_WRITES=true.'))return;
+ try {const data=await fetchJson('/api/retry',{method:'POST'});alert('Queued '+data.retried+' failed orders');}
+ catch(error) {alert('Retry failed: '+error.message);}
+ await load();
+}
+load();
+</script></body></html>

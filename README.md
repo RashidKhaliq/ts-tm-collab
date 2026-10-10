@@ -1,3 +1,11 @@
+# ThriftSync Simple v2.1 (Dashboard Fix)
+
+**Fix:** `/api/status` and `/api/retry` now surface detailed HTTP errors rather than a JSON.parse failure. The dashboard is moved out of Vercel's publicly served static directory and requires Express Basic Auth.
+
+**For the screenshot showing 503:** On Vercel, verify `ADMIN_USER` and `ADMIN_PASSWORD` exist in the deployed environment (Production, Preview, etc.), that neither is a template placeholder, and redeploy. `/health` should return JSON. `/api/status` should ask for login (`401`) when not authenticated, and return JSON when logged in. If it still returns `503`, the dashboard now shows the precise reason.
+
+**Safety:** Don't click Retry failed orders until both stores are connected and you know whether `LIVE_WRITES=true`; Retry can create real Shopify orders.
+
 # ThriftSync Simple v2
 
 **2+ independent Shopify stores. No manual product import. No Google Sheets. No SKU linking dashboard.**
