@@ -1,223 +1,69 @@
-# Shopify Multi-Store Inventory & Dropship Sync Engine
+# ThriftSync Simple v2
 
-A production-ready solution for **automated B2B dropshipping fulfillment** and **real-time multi-store inventory synchronization** across independent Shopify stores. 
+**2+ independent Shopify stores. No manual product import. No Google Sheets. No SKU linking dashboard.**
 
-Built with **Next.js 14 App Router**, **TypeScript**, **Prisma ORM**, **Shopify GraphQL & REST Admin APIs**, and an **Express standalone script runner**.
+An order on any configured Shopify store triggers a `orders/create` webhook. The app looks up that line item on its selling store, reads `custom.supplier` from the **product**, and identifies the owning store via `STORE_X_SUPPLIER_NAME`. It then finds the same SKU **and** supplier on every configured store through live Shopify Admin GraphQL queries. Only exact unique matches are changed.
 
----
+## The two flows
 
-## 💡 Why & When to Use This App
+**Owner sale:** Store A sells an item with `SKU=ABC-123`, `custom.supplier=ZIA` and Store A is configured with `STORE_A_SUPPLIER_NAME=ZIA`. No additional Shopify order is created. Matching listing on Store A and other connected stores are marked `DRAFT`, tagged `Soldby_Owner_Store` (based on configured store name), and tracked available inventory is set to zero.
 
-### The Problem
-When operating multiple Shopify stores (e.g. a brand store and reseller/partner stores):
-- Retailers (Store B) sell products supplied by an owner store (Store A).
-- Manual order placement on supplier stores leads to fulfillment delays, human error, and missing tracking information.
-- Inventory is disconnected: when Store B sells 1 unit of Store A's item, other connected stores don't know, leading to **overselling and stockouts**.
+**Reseller sale:** Store B sells item `ABC-123` with `custom.supplier=ZIA`. App finds Store A owner listing with `ABC-123 + ZIA`, and creates **one internal order on Store A** with buyer info pointing to Store B's owner email and configured owner delivery address, a 99% percentage discount, shipping line costing 0, `Dropshipped_Order` and unique `TS_` reference tags. Original customer name, email, phone, postal address, original Shopify order number and SKU appear in internal order notes. The app first drafts and tags all matching listings to stop further sales. On non-owner stores available quantity is zeroed immediately; on the owner store it remains available until the supplier order decrements it, and any remaining available quantity is then set to zero. The final state is DRAFT + `Soldby_Selling_Store` + available quantity 0 in **all** stores where it is listed. Shopify internal order inventory is explicitly decremented with `DECREMENT_OBEYING_POLICY`.
 
-### The Solution
-This application automates the entire cross-store dropshipping and inventory sync workflow in real time:
-1. **Detects product ownership** via structured product metafields (`custom.supplier`) or tags (`Supplier: Name`).
-2. **Automates B2B order creation** on the supplier store when a reseller sells their product.
-3. **Synchronizes inventory instantly** across **all connected stores** (> 2 stores) whenever any item is sold or updated.
-4. **Maintains a 100% complete Order Sync History audit trail** for every single sync attempt (SUCCESS, FAILED, SKIPPED, SELF_SALE).
+For a multi-line customer order, one supplier order is created per distinct owner. No extra orders for owner-owned items.
 
----
+## Quick deployment (Vercel + Neon)
 
-## 🛠 Core Functionality & Scenarios
+1. Upload contents **inside this folder** to GitHub repository root. You should see `package.json`, `vercel.json`, `api/index.js`, `src/`, `public/`.
+2. Create or reuse Neon Postgres database. Ensure `DATABASE_URL` is set for the correct deployment environment. Existing old ThriftSync tables (`stores`, etc.) can stay; this version uses separate `ts_` tables, created automatically on first request using one statement at a time (fixes Neon prepared-statement multi-query error).
+3. Vercel Settings > Build & Deployment > Framework Preset: **Other**. Root directory: folder containing `package.json`. No `next` dependency. Add environment variables from `.env.example`, with real values. `STORE_A_URL`/`STORE_B_URL` must be `something.myshopify.com`, not your public domain. More stores use `STORE_C_*`, etc.
+4. Start with `LIVE_WRITES=false` and deploy. Open your deployment root dashboard (HTTP Basic Auth: `ADMIN_USER`/`ADMIN_PASSWORD`). It tests API access and lists missing scopes for each store. A 401 means the token is invalid/expired/wrong shop; this **cannot be fixed by application code**. API tokens may begin `shpca_` if issued for the Admin API, but prefix alone proves nothing. GraphQL `orderCreate` additionally **requires offline app authorization**. This is a Shopify restriction.
+5. Ensure Admin API access scopes: `read_products`, `write_products`, `read_inventory`, `write_inventory`, `read_orders`, `write_orders` (and adequate order/customer access to read buyer fields). Grant protected customer data permissions if Shopify restricts them. App uses Shopify's GraphQL Admin API version `2026-10`.
+6. In **each** Shopify store, subscribe **Order creation** webhook to `https://ts-tm.onlinethriftstore.pk/api/webhooks` JSON. It must send `X-Shopify-Shop-Domain` and `X-Shopify-Hmac-Sha256`. Set `STORE_X_WEBHOOK_SECRET` to the signing secret used for that Shopify webhook, **not** the notification webhook URL, the webhook delivery ID, or the API token. If both stores share the same Shopify app, their signing secret may be the same. If you manually created webhooks, use the actual matching signing secret.
+7. The existing subscriptions for Order cancellation, Product update and Inventory item update may remain, but this streamlined app **ignores** them. There is **no automatic cancellation reversal**.
+8. Place development-store test order. Check dashboard's Latest orders and Activity. In DRY RUN no Shopify write takes place, but the app records what would match. Toggle `LIVE_WRITES=true` after confirming tokens/webhooks and create **a new test order**. Dry-run orders are not later processed automatically.
+9. Once LIVE_WRITES is true, order webhook instantly queues a Neon job and the serverless function schedules background processing with Vercel `waitUntil`. Failed items appear in the dashboard; use **Retry failed orders** after fixing the error. This version also exposes a secured `GET /api/worker` endpoint, authorized by `Authorization: Bearer <CRON_SECRET>`, for an **external recurring scheduler** (recommended for reliable retries and recovery). On Vercel Hobby, minute-by-minute Vercel Cron isn't available; do not assume background processing is guaranteed if functions are stopped. Add an external schedule invoking this endpoint every 1-5 minutes, or use an eligible Vercel Cron plan.
+10. Build command: none. Vercel uses the Express entry point through `api/index.js`.
 
-### 1. Product Ownership Identification
-Product ownership is assigned using either:
-- **Shopify Product Metafield (Primary & Preferred)**:
-  ```
-  custom.supplier = "Sharry"
-  ```
-  *Structured, precise, and less likely to mix with normal product tags.*
-- **Product Tag (Secondary / Fallback)**:
-  ```
-  Supplier: Sharry
-  ```
-  *Case-insensitive matching (e.g. `Supplier: Sharry`, `supplier: sharry`).*
+## Required Vercel env values
 
-If Store A (Sharry Store (OTS)) has the supplier identifier `Sharry`, any product tagged with `custom.supplier = "Sharry"` or `Supplier: Sharry` is recognized as belonging to Store A.
+See `.env.example`. Existing old values `STORE_X_*` can be reused but `STORE_X_WEBHOOK_SECRET` must be correct. `STORE_ENCRYPTION_KEY` and `PRISMA_DATABASE_URL` are **not required** for this clean rebuild; tokens are read from Vercel environment variables and never stored in DB.
 
----
+## Domain and webhook verification
 
-### 2. Scenario 1: Store B sells Store A's product (Cross-Store Dropshipping)
-When **Store B** (Reseller) sells a product owned by **Store A** (Supplier):
+`GET /health` is unauthenticated and safe. Dashboard `/` and `/api/status` require Basic Auth. Webhooks must be genuine Shopify messages with valid raw-body HMAC; a normal browser GET to the webhook endpoint will not process an order.
 
-1. **Ownership Detection**: The app identifies that the sold SKU belongs to Store A based on `custom.supplier` or `Supplier: Sharry`.
-2. **B2B Order Creation on Store A**:
-   - The order is created on Store A under **Store B's owner/store name and email** (`retailerStore.name`, `retailerStore.ownerEmail`), representing a wholesale/B2B transaction placed by Store B with a **70% discount on each product**.
-   - **Order Comments / Notes**: Includes Store B's original order number and specifies that it is a dropshipping order with 70% discount:
-     ```
-     Dropshipping order placed by Hamza Store (Vougewing) (hamzastore.myshopify.com) for original order #1001. 70% discount applied on each product.
-     ```
-   - **Shopify Sales Channel / Source**: Set to `"Dropshipping"`.
-   - **Order Tags**: Added `Automated Dropship`, `Dropshipping`, `Soldby-Hamza`, `70% Discount Applied`.
-3. **Multi-Store Inventory Sync (> 2 Stores)**:
-   - If connected stores are more than 2 (3 or more stores connected), the app immediately deducts/syncs the updated available product inventory across **all connected stores**, ensuring the sold product cannot remain available in other stores.
-4. **Order Sync Audit Log**:
-   - Recorded in **Order Sync History** as `SUCCESS` with details of source order `#1001` and created supplier order `#1002`.
+## Limits and important facts
 
----
+- **Shopify checkout is completed before an order-created webhook arrives.** The application reacts as quickly as possible, but two simultaneous checkouts can happen. Neon claims prevent both webhook processors from treating the same SKU as available, but can't revoke an already-completed checkout automatically.
+- If there are two products in the same shop with identical SKU + supplier, the app **stops** for that SKU rather than drafting the wrong product.
+- Product DRAFT affects **all variants on that product**, not only the ordered variant. Intended for one-off thrift items; group different variants into separate products if needed.
+- The 99% discount is an actual Shopify order discount, not a fake price. Zero shipping is a defined zero-price shipping line; taxation follows Shopify's order rules and may still apply.
+- When a supplier order is created and Shopify emits another order/create event for it, the app **ignores** the internal order using `Dropshipped_Order` / `TS_` tags.
+- Syncing old orders is not part of this deliberately minimal version. The webhook must be installed and working **before** placing the test order.
+- If the target product is absent on some shops, those shops are skipped; the owner store must have an exact matched listing.
+- Store owners' `custom.supplier` values must match `STORE_X_SUPPLIER_NAME` case-insensitively; SKU matching is also case-insensitive. Metafield belongs on Shopify **product** (not variant) in this app.
+- Shopify token 401 errors reflect credentials/store permissions and cannot be fixed by changing a token prefix. The dashboard checks each store live.
+- No direct token display, no customer data in logs. The webhook payload (including buyer details) is temporarily held in Neon for processing. Protect access and set a retention/cleanup process as appropriate to your privacy requirements.
 
-### 3. Scenario 2: Store A sells its own product (Self-Sale)
-When **Store A** sells a product that Store A owns:
-
-1. **Ownership Detection**: The app identifies Store A as the product owner (`custom.supplier = "Sharry"` matches Store A).
-2. **No Dropshipping Order**: Since Store A is selling its own product, no B2B dropshipping order is created on another store.
-3. **Inventory Sync Across All Other Stores**:
-   - The sold quantity is deducted and synchronized across **all other connected stores** (Store B, Store C, etc.).
-4. **Order Tag & Recording**:
-   - Tagged `Soldby-Sharry` (Store A's name/identifier).
-   - Logged in **Order Sync History** as `SUCCESS` (Self Sale) with full SKU details.
-
----
-
-### 4. Comprehensive Order Sync History
-**Every single order sync attempt** is captured in the dashboard Order Sync History tab:
-- **`SUCCESS`**: B2B dropshipping order created or self-sale inventory synced successfully.
-- **`FAILED`**: Detailed error message (e.g. SKU missing on supplier store or missing access token).
-- **`SKIPPED`**: Logged when no dropship SKUs or supplier rules matched.
-
-#### Persistence Layer
-- **PostgreSQL / Supabase**: Saved via Prisma ORM when `DATABASE_URL` is set.
-- **Local Persistent JSON Storage**: Automatic fallback to `.data/order_sync_db.json` when running locally or in serverless environments, guaranteeing zero loss of history across server restarts or cold starts.
-
----
-
-## 📋 Requirements & Prerequisites
-
-1. **Node.js**: `v18.x` or higher.
-2. **Shopify Admin Access**:
-   - Access to connected stores' Shopify Admin.
-   - Admin API Access Tokens (`shpat_...`).
-   - Required Shopify API Scopes:
-     ```
-     read_products, write_products, read_orders, write_orders, read_inventory, write_inventory
-     ```
-
----
-
-## 🚀 Setup & Execution Guide
-
-### Option A: Next.js App Router & Web Dashboard (Recommended)
-
-1. **Clone & Install Dependencies**:
-   ```bash
-   git clone https://github.com/RashidKhaliq/shopi-inventory-collab.git
-   cd shopi-inventory-collab
-   npm install
-   ```
-
-2. **Configure Environment Variables (`.env`)**:
-   Create a `.env` file in the root directory:
-   ```env
-   # PostgreSQL Database (Optional - persistent JSON fallback used if omitted)
-   DATABASE_URL="postgresql://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres"
-
-   # Store A Configuration (Production)
-   STORE_A_NAME="Thrift Shop"
-   STORE_A_URL="store-a.myshopify.com"
-   STORE_A_ACCESS_TOKEN="shpat_xxxxxxxxxxxxxxxx"
-   STORE_A_OWNER_EMAIL="owner-a@example.com"
-   STORE_A_SUPPLIER_NAME="ZIA"
-   STORE_A_SOLDBY_TAG="Soldby-ZIA"
-   STORE_A_WEBHOOK_SECRET="shpss_aaaaaaaaaaaaaaaa"
-
-   # Store B Configuration (Production)
-   STORE_B_NAME="Thrift Mall"
-   STORE_B_URL="store-b.myshopify.com"
-   STORE_B_ACCESS_TOKEN="shpat_yyyyyyyyyyyyyyyy"
-   STORE_B_OWNER_EMAIL="owner-b@example.com"
-   STORE_B_SUPPLIER_NAME="SALAM"
-   STORE_B_SOLDBY_TAG="Soldby-SALAM"
-   STORE_B_WEBHOOK_SECRET="shpss_bbbbbbbbbbbbbbbb"
-   ```
-
-3. **Initialize Database (Optional)**:
-   ```bash
-   npx prisma generate
-   npx prisma db push
-   ```
-
-4. **Run Development Server**:
-   ```bash
-   npm run dev
-   ```
-   Open `http://localhost:3000` in your browser.
-
-5. **Deploy to Vercel**:
-   ```bash
-   git push origin main
-   ```
-   Import into Vercel, configure your `.env` variables under **Project Settings > Environment Variables**, and deploy!
-
----
-
-### Option B: Express Standalone Script Runner
-
-If you prefer running a single Node.js Express process:
-
-```bash
-node index.js
-```
-The server will start on port `8000` (or `process.env.PORT`).
-
----
-
-## ⚡ Webhook Registration
-
-Register the serverless webhook URL in each connected store's Shopify Admin (**Settings > Notifications > Webhooks**):
-
-- **Webhook URL**: `https://your-app.vercel.app/api/webhooks/shopify`
-- **Events to Subscribe (Format: JSON)**:
-  - `orders/create` (Triggers B2B dropshipping fulfillment & inventory sync)
-  - `inventory_levels/update` (Triggers real-time SKU inventory level sync)
-  - `orders/fulfilled` (Fulfillment status & tracking sync)
-
----
-
-## 🧪 SKU Simulator & Diagnostics
-
-Use the built-in **🧪 SKU Simulator** on the admin dashboard to test SKU matching and B2B order creation without placing live orders:
-1. Select **Source Selling Store** and **Target Supplier Store**.
-2. Enter product **SKU** (e.g. `jacket-001`).
-3. Click **Execute Test Sync**. The trace log will report whether the variant was matched, inventory items retrieved, and B2B order created.
-
-To verify system connection status and API keys, visit:
-```
-GET /api/verify-env
-```
-
----
-
-## 📁 Repository Structure
+## Local dev
 
 ```
-├── app/
-│   ├── api/
-│   │   ├── logs/             # Live log stream endpoint
-│   │   ├── orders/           # Order sync history & manual today's sync API
-│   │   ├── status/           # System connection status API
-│   │   ├── stores/           # Connected stores management API
-│   │   ├── test-sync/        # SKU simulator endpoint
-│   │   └── webhooks/shopify/ # Core Shopify webhook receiver
-│   ├── globals.css
-│   ├── layout.tsx
-│   └── page.tsx              # Vercel Geist Admin Dashboard UI
-├── lib/
-│   ├── db.ts                 # Database singleton with JSON file persistence fallback
-│   └── shopify.ts            # Shopify Admin GraphQL & REST engine
-├── prisma/
-│   └── schema.prisma         # Prisma ORM PostgreSQL schema
-├── index.js                  # Standalone Express script runner
-├── package.json
-└── README.md
+cp .env.example .env
+npm install
+npm start
+npm test
 ```
 
----
+See `public/index.html` for the minimal built-in status dashboard. No product-maintenance UI or manual inventory-listing tools exist.
 
-## 🛡 License & Support
+## How to debug specific failure
 
-Maintained for multi-store Shopify collaborations. For questions or setup assistance, consult the diagnostic logs on the Admin Dashboard.
+- `401` under Connected Stores: wrong/expired/offline authorization mismatch token and `.myshopify.com` domain; verify Shopify Admin API directly.
+- No Latest orders after checkout: Shopify webhook not delivered to `/api/webhooks`, wrong URL, invalid HMAC, or webhook created on wrong store; inspect Vercel Function logs.
+- `DRY_RUN` jobs: set `LIVE_WRITES=true` and submit a *new* test order.
+- `ERROR` with missing supplier: add `custom.supplier` product metafield to source and partner products.
+- `ERROR` owner matching: verify matching SKU and supplier exist on owner's store.
+- `ERROR` scope/401: grant correct scopes and obtain a valid offline Admin API token per shop.
+- `ERROR` `OrderCreate` requiring offline token: Shopify requires offline authorization for this mutation; update app auth, not webhook config.
+- `PENDING` for too long: scheduled processing not running; call the protected worker endpoint using your scheduler, or retry via dashboard.
