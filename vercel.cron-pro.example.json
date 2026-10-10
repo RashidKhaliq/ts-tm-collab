@@ -1,4 +1,0 @@
-{
-  "note": "Example only: copy the 'crons' property into vercel.json on a Vercel plan that permits every-minute cron scheduling. CRON_SECRET must be defined in Vercel.",
-  "crons": [{"path":"/api/worker","schedule":"* * * * *"}]
-}
