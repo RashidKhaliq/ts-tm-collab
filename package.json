@@ -1,13 +1,17 @@
 {
-  "name": "thriftsync-simple",
-  "version": "3.0.0-beta.1",
+  "name": "stockbridge-v3",
+  "version": "3.0.0",
+  "description": "Multi-Store Shopify Inventory, Supplier Order Routing & Sales Analytics",
   "private": true,
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node server.js",
+    "dev": "node --watch server.js",
     "test": "node --test tests/*.test.js",
-    "check": "node --check server.js && node --check src/app.js && node --check src/engine.js && node --check src/shopify.js && node --check src/db.js && node --check src/analytics.js"
+    "check": "node --check server.js && node --check api/index.js && node --check src/app.js && node --check src/analytics.js && node --check src/engine.js && node --check src/shopify.js && node --check src/db.js && node --check src/config.js",
+    "sync:catalog": "node scripts/sync-catalog.js",
+    "backfill:orders": "node scripts/backfill-orders.js"
   },
   "dependencies": {
     "@vercel/functions": "^2.0.0",

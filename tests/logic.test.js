@@ -5,10 +5,10 @@ import { getOwner, physicalKey, isInternalOrder, processOrder } from '../src/eng
 import { createSupplierOrder, makeVariantSearch, markSold, graphql } from '../src/shopify.js';
 
 const stores=[
-  {key:'A',name:'Owner Store',supplier:'ZIA',domain:'a.myshopify.com',ownerEmail:'owner@a.com',ownerPhone:'',address:{}},
-  {key:'B',name:'Selling Store',supplier:'HAMZA',domain:'b.myshopify.com',ownerEmail:'owner@b.com',ownerPhone:'03001234567',address:{address1:'Shop 2',city:'Lahore',country:'Pakistan'}}
+  {key:'A',name:'Owner Store',supplier:'Store A',domain:'a.myshopify.com',ownerEmail:'owner@a.com',ownerPhone:'',address:{}},
+  {key:'B',name:'Selling Store',supplier:'Store B',domain:'b.myshopify.com',ownerEmail:'owner@b.com',ownerPhone:'03001234567',address:{address1:'Shop 2',city:'Lahore',country:'Pakistan'}}
 ];
-const variant=(sku='ABC-100',supplier='ZIA',id='1')=>({id:`gid://shopify/ProductVariant/${id}`,sku,
+const variant=(sku='ABC-100',supplier='Store A',id='1')=>({id:`gid://shopify/ProductVariant/${id}`,sku,
   product:{id:`gid://shopify/Product/${id}`,tags:[],status:'ACTIVE',metafield:{value:supplier}},
   inventoryItem:{tracked:true,inventoryLevels:{nodes:[{quantities:[{name:'available',quantity:1}],location:{id:'gid://shopify/Location/1'}}],pageInfo:{hasNextPage:false}}}
 });
@@ -25,8 +25,8 @@ function fakeDeps(storeKey,live=true) {
     async saveSupplierOrder(key,owner,id){suppliers.set(key+owner,id);}
   };
   const shopify={
-    async fetchSourceVariant(){return variant('ABC-100','ZIA',storeKey==='A'?'1':'2');},
-    async findMatchingVariant(s){return variant('ABC-100','ZIA',s.key==='A'?'1':'2');},
+    async fetchSourceVariant(){return variant('ABC-100','Store A',storeKey==='A'?'1':'2');},
+    async findMatchingVariant(s){return variant('ABC-100','Store A',s.key==='A'?'1':'2');},
     referenceTag(){return 'TS_fake'},
     async findExistingSupplierOrder(){return null;},
     async createSupplierOrder(owner,seller,order,lines){created.push({owner,seller,order,lines});return 'gid://shopify/Order/50';},
@@ -36,12 +36,12 @@ function fakeDeps(storeKey,live=true) {
 }
 
 test('store configuration loads dynamic stores and identifies owner without trusting SKU alone',()=>{
-  const env={STORE_A_URL:'a.myshopify.com',STORE_A_SUPPLIER_NAME:'ZIA',STORE_A_ACCESS_TOKEN:'shpca_abc',STORE_A_WEBHOOK_SECRET:'secret',
-    STORE_B_URL:'https://b.myshopify.com/',STORE_B_SUPPLIER_NAME:'HAMZA',STORE_B_ACCESS_TOKEN:'shpca_xyz',STORE_B_WEBHOOK_SECRET:'secret2'};
+  const env={STORE_A_URL:'a.myshopify.com',STORE_A_SUPPLIER_NAME:'Store A',STORE_A_ACCESS_TOKEN:'shpca_abc',STORE_A_WEBHOOK_SECRET:'secret',
+    STORE_B_URL:'https://b.myshopify.com/',STORE_B_SUPPLIER_NAME:'Store B',STORE_B_ACCESS_TOKEN:'shpca_xyz',STORE_B_WEBHOOK_SECRET:'secret2'};
   const result=getStores(env);
   assert.equal(result.length,2);
   assert.equal(result[1].domain,'b.myshopify.com');
-  assert.equal(getOwner(stores,'zia').key,'A');
+  assert.equal(getOwner(stores,'store a').key,'A');
   assert.notEqual(physicalKey(stores[0],'ABC-100'),physicalKey(stores[1],'ABC-100'));
   assert.equal(soldTag('Store B / Lahore'),'Soldby_Store_B_Lahore');
 });
