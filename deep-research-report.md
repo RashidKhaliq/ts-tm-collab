@@ -139,6 +139,46 @@ instead of using:
 ONLY TOP 5
 ```
 
+sequenceDiagram
+    participant S as Selling Store
+    participant SB as StockBridge
+    participant DB as Neon
+    participant O as Owner Store
+    participant LS as Linked Stores
+
+    S->>SB: orders/create
+    SB->>SB: Verify HMAC
+    SB->>DB: Deduplicate webhook ID
+    SB->>S: Resolve order line SKU
+    SB->>S: Read custom.supplier
+    SB->>DB: supplier -> owner store
+    SB->>LS: Find exact SKU + supplier
+    SB->>DB: Create ACTIVE reservation
+    SB->>DB: Save pre-write snapshots
+
+    alt Owner != Selling Store
+        SB->>O: orderCreate
+        Note over SB,O: Configured % discount<br/>Optional free shipping<br/>Source order/customer in note
+        O-->>SB: Internal order ID/name
+        SB->>DB: Save internal order
+    end
+
+    SB->>LS: Product -> DRAFT
+    SB->>LS: Add Soldby_[SellingStoreName]
+    SB->>LS: Available inventory -> 0
+    SB->>DB: Mark source order complete
+
+    S->>SB: orders/cancelled
+    SB->>DB: Check ACTIVE reservations
+    alt No other active claim
+        SB->>O: Cancel internal supplier order
+        SB->>LS: Restore original snapshots
+        SB->>DB: Close reservation
+    else Another active claim exists
+        SB->>DB: Close this reservation only
+    end
+
+    
 So your dashboard isn't restricted to the five largest Product Types or suppliers.
 
 Shopify officially supports custom product metafields as dimensions in the `sales` schema. The required syntax is:

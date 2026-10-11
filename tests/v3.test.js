@@ -225,6 +225,111 @@ test('historical cancellation without pre-sale snapshot safely skips without err
   assert.ok(logs.some(l => l[1].includes('historical order')));
 });
 
+test('cancellation cancels internal supplier order on owner store and handles active reservations', async () => {
+  const cancelledSupplierOrders = [];
+  const restoredSnapshots = [];
+  const releasedClaims = [];
+
+  const mockSnapshots = [
+    {
+      id: 1,
+      job_key: 'B:777',
+      order_id: '777',
+      selling_key: 'B',
+      store_key: 'A',
+      product_id: 'gid://shopify/Product/1',
+      variant_id: 'gid://shopify/ProductVariant/1',
+      sku: 'TEST-SKU',
+      item_key: 'A:test-sku',
+      previous_status: 'ACTIVE',
+      previous_quantities: [{ locationId: 'gid://shopify/Location/1', quantity: 1 }],
+      sold_tag: 'Soldby_ThriftShop'
+    }
+  ];
+
+  const db = {
+    async getSnapshotsForOrder() { return mockSnapshots; },
+    async getSupplierOrdersForJob(jobKey) {
+      assert.equal(jobKey, 'B:777');
+      return [{ owner_key: 'A', owner_order_gid: 'gid://shopify/Order/555' }];
+    },
+    async checkOtherClaims() { return new Map(); },
+    async releaseClaims(keys) { releasedClaims.push(...keys); },
+    async log() {}
+  };
+
+  const shopify = {
+    async cancelSupplierOrder(owner, orderGid) {
+      cancelledSupplierOrders.push({ owner: owner.key, orderGid });
+      return { cancelled: true };
+    },
+    async restoreProductState(store, snapshot) {
+      restoredSnapshots.push({ store: store.key, sku: snapshot.sku });
+      return { restored: true };
+    }
+  };
+
+  const cancelJob = { job_key: 'CANCEL:B:777', selling_key: 'B', order_id: '777', payload: { id: 777 } };
+  const res = await processCancellation(cancelJob, mockStores, { db, shopify, liveWrites: true });
+
+  assert.equal(res.cancelled, true);
+  assert.equal(res.restored, 1);
+  assert.equal(cancelledSupplierOrders.length, 1);
+  assert.equal(cancelledSupplierOrders[0].owner, 'A');
+  assert.equal(cancelledSupplierOrders[0].orderGid, 'gid://shopify/Order/555');
+  assert.deepEqual(releasedClaims, ['A:test-sku']);
+});
+
+test('cancellation with competing active claim closes reservation without overwriting other claim', async () => {
+  const restoredSnapshots = [];
+  const releasedClaims = [];
+
+  const mockSnapshots = [
+    {
+      id: 1,
+      job_key: 'B:777',
+      order_id: '777',
+      selling_key: 'B',
+      store_key: 'A',
+      product_id: 'gid://shopify/Product/1',
+      variant_id: 'gid://shopify/ProductVariant/1',
+      sku: 'TEST-SKU',
+      item_key: 'A:test-sku',
+      previous_status: 'ACTIVE',
+      previous_quantities: [{ locationId: 'gid://shopify/Location/1', quantity: 1 }],
+      sold_tag: 'Soldby_ThriftShop'
+    }
+  ];
+
+  const db = {
+    async getSnapshotsForOrder() { return mockSnapshots; },
+    async getSupplierOrdersForJob() { return []; },
+    async checkOtherClaims() {
+      // Simulate another order having an active reservation on the same physical item
+      return new Map([['A:test-sku', 'B:888']]);
+    },
+    async releaseClaims(keys) { releasedClaims.push(...keys); },
+    async log() {}
+  };
+
+  const shopify = {
+    async cancelSupplierOrder() {},
+    async restoreProductState(store, snapshot) {
+      restoredSnapshots.push({ store: store.key, sku: snapshot.sku });
+    }
+  };
+
+  const cancelJob = { job_key: 'CANCEL:B:777', selling_key: 'B', order_id: '777', payload: { id: 777 } };
+  const res = await processCancellation(cancelJob, mockStores, { db, shopify, liveWrites: true });
+
+  assert.equal(res.cancelled, true);
+  // Restored count should be 0 because competing claim prevented overwriting
+  assert.equal(res.restored, 0);
+  assert.equal(restoredSnapshots.length, 0);
+  // Reservation is still closed for this cancelled order
+  assert.deepEqual(releasedClaims, ['A:test-sku']);
+});
+
 test('ShopifyQL query builder generates correct query syntax, filters dropship orders, and paginates', () => {
   const q1 = buildShopifyQLQuery({ since: '2026-09-11', until: '2026-10-10', limit: 1000, offset: 0 });
   assert.ok(q1.includes('FROM sales'));

@@ -330,6 +330,8 @@ code {
   </div>
 </header>
 
+<div id="globalNotice" class="alert alert-info" style="display:none;margin-bottom:18px;"></div>
+
 <nav class="tabs">
   <button id="tab-btn-analytics" class="active" onclick="switchTab('analytics')">📊 Analytics</button>
   <button id="tab-btn-inventory" onclick="switchTab('inventory')">📦 Inventory Sync</button>
@@ -890,8 +892,18 @@ async function loadStatus() {
       `;
     }).join('') || '<tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-muted)">No activity logs yet.</td></tr>';
 
+    const notice = $('globalNotice');
+    notice.style.display = 'flex';
+    notice.className = data.liveWrites ? 'alert alert-warn' : 'alert alert-info';
+    notice.innerHTML = `Writes enabled: <strong class="${data.liveWrites ? 'pill-warn' : 'pill-ok'}">${data.liveWrites ? 'YES. LIVE SHOPIFY CHANGES' : 'NO. DRY RUN ONLY'}</strong> &middot; Configured stores: ${data.stores?.length || 0} &middot; Internal supplier discount: ${currentDiscount}%` +
+      (data.configError ? ` &middot; <span style="color:#ef4444;font-weight:600;">Config notice: ${escapeHtml(data.configError)}</span>` : '');
+
   } catch (err) {
     console.error('Status load failed:', err);
+    const notice = $('globalNotice');
+    notice.style.display = 'flex';
+    notice.className = 'alert alert-warn';
+    notice.innerHTML = `<strong>System Notice / Access Error:</strong> ${escapeHtml(err.message)}`;
   }
 }
 

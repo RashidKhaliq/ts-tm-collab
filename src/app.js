@@ -47,8 +47,14 @@ function cronAuth(req, res, next) {
 }
 
 function queueWork() {
-  const task = runQueue(stores(), 3).catch(err => console.error('ThriftSync worker failed:', err.message));
-  try { waitUntil(task); } catch { task.catch(() => {}); } // Local Express: promise continues; Vercel: waitUntil extends lifetime.
+  try {
+    const s = stores();
+    if (!s || !s.length) return;
+    const task = runQueue(s, 3).catch(err => console.error('ThriftSync worker failed:', err.message));
+    try { waitUntil(task); } catch { task.catch(() => {}); } // Local Express: promise continues; Vercel: waitUntil extends lifetime.
+  } catch (err) {
+    console.error('queueWork configuration error:', err.message);
+  }
 }
 
 // Shopify HMAC requires raw, unparsed request bytes. Same endpoint for all stores.
@@ -88,7 +94,14 @@ app.use(express.json({ limit: '50kb' }));
 
 app.get('/api/status', basicAuth, async (req, res) => {
   try {
-    const status = await Promise.all(stores().map(async s => {
+    let configuredStores = [];
+    let configError = null;
+    try {
+      configuredStores = stores();
+    } catch (e) {
+      configError = e.message;
+    }
+    const status = await Promise.all(configuredStores.map(async s => {
       try {
         const result = await testStore(s);
         return {
@@ -105,6 +118,7 @@ app.get('/api/status', basicAuth, async (req, res) => {
     const invStatus = await db.getInventorySyncStatus();
     res.json({
       liveWrites,
+      configError,
       discountPercent,
       inventoryStatus: invStatus,
       stores: status,
@@ -145,7 +159,9 @@ app.post('/api/settings', basicAuth, async (req, res) => {
 // Analytics API
 app.get('/api/analytics', basicAuth, async (req, res) => {
   try {
-    const data = await getCombinedAnalytics(stores(), req.query);
+    let s = [];
+    try { s = stores(); } catch {}
+    const data = await getCombinedAnalytics(s, req.query);
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -154,7 +170,10 @@ app.get('/api/analytics/filters', basicAuth, async (req, res) => {
   try {
     await db.ensureSchema();
     const options = await db.getInventoryFilterOptions();
-    const storeList = stores().map(s => ({ key: s.key, name: s.name, supplier: s.supplier }));
+    let storeList = [];
+    try {
+      storeList = stores().map(s => ({ key: s.key, name: s.name, supplier: s.supplier }));
+    } catch {}
     res.json({ stores: storeList, ...options });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -135,25 +135,27 @@ export async function markSold(store, variant, saleTag, key, options={}) {
 
 export async function removeTags(store, productId, tags) {
   if (!tags || !tags.length) return;
+  const id = String(productId).startsWith('gid://') ? String(productId) : `gid://shopify/Product/${productId}`;
   const data = await graphql(store, `mutation($id:ID!,$tags:[String!]!){
     tagsRemove(id:$id,tags:$tags){ node{id} userErrors{message} }
-  }`, { id: productId, tags });
+  }`, { id, tags });
   assertNoUserErrors(data.tagsRemove, 'Remove tags');
   return data.tagsRemove;
 }
 
 export async function restoreProductState(store, snapshot, idempotencyKey = '') {
+  const prodId = String(snapshot.product_id).startsWith('gid://') ? String(snapshot.product_id) : `gid://shopify/Product/${snapshot.product_id}`;
   // 1. Restore product status
   if (snapshot.previous_status && snapshot.previous_status !== 'DRAFT') {
     const data = await graphql(store, `mutation($product:ProductUpdateInput!){
       productUpdate(product:$product){ product{id status} userErrors{message} }
-    }`, { product: { id: snapshot.product_id, status: snapshot.previous_status } });
+    }`, { product: { id: prodId, status: snapshot.previous_status } });
     assertNoUserErrors(data.productUpdate, 'Restore product status');
   }
 
   // 2. Remove Soldby_* tag
   if (snapshot.sold_tag) {
-    await removeTags(store, snapshot.product_id, [snapshot.sold_tag]);
+    await removeTags(store, prodId, [snapshot.sold_tag]);
   }
 
   // 3. Restore inventory quantity to recorded pre-sale level
@@ -255,6 +257,24 @@ export async function createSupplierOrder(owner, seller, originalOrder, lines, r
   assertNoUserErrors(data.orderCreate,'Create dropship order');
   if (!data.orderCreate.order?.id) throw new Error('Shopify did not return supplier order ID');
   return data.orderCreate.order.id;
+}
+
+export async function cancelSupplierOrder(store, orderGid) {
+  const id = String(orderGid).startsWith('gid://') ? String(orderGid) : `gid://shopify/Order/${orderGid}`;
+  const mutation = `mutation($orderId: ID!) {
+    orderCancel(orderId: $orderId, reason: OTHER, restock: false) {
+      orderCancelUserErrors { code field message }
+    }
+  }`;
+  const data = await graphql(store, mutation, { orderId: id });
+  if (data?.orderCancel?.orderCancelUserErrors?.length) {
+    const errors = data.orderCancel.orderCancelUserErrors.map(e => e.message).join('; ');
+    if (errors.toLowerCase().includes('already') || errors.toLowerCase().includes('cannot be cancelled')) {
+      return { cancelled: true, warning: errors };
+    }
+    throw new Error(`Cancel order error: ${errors}`);
+  }
+  return { cancelled: true };
 }
 
 export async function queryShopifyQL(store, qlQuery) {

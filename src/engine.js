@@ -155,7 +155,35 @@ export async function processCancellation(job, stores, deps={db,shopify,liveWrit
     return {dryRun:true,restored:snapshots.length};
   }
 
+  // 1. Check active reservations/claims
+  const itemKeys=[...new Set(snapshots.map(s=>s.item_key).filter(Boolean))];
+  const origJobKey = `${job.selling_key || snapshots[0]?.selling_key}:${orderId}`;
+  const otherClaims = database.checkOtherClaims ? await database.checkOtherClaims(itemKeys, origJobKey) : new Map();
+
+  // 2. Cancel internal supplier order(s) on owner stores if created
+  if (api.cancelSupplierOrder && database.getSupplierOrdersForJob) {
+    const supplierOrders = await database.getSupplierOrdersForJob(origJobKey);
+    for (const so of supplierOrders) {
+      const owner = stores.find(s => s.key === so.owner_key);
+      if (owner) {
+        try {
+          await api.cancelSupplierOrder(owner, so.owner_order_gid);
+          await database.log(job.job_key, 'OK', `Owner ${owner.key}: cancelled internal supplier order ${so.owner_order_gid}`);
+        } catch (err) {
+          await database.log(job.job_key, 'WARN', `Owner ${owner.key}: could not cancel supplier order ${so.owner_order_gid}: ${err.message}`);
+        }
+      }
+    }
+  }
+
+  // 3. Restore original snapshots where no other active claim exists
+  let restoredCount = 0;
   for (const snapshot of snapshots) {
+    // If another active order has claimed this item, do not overwrite its state
+    if (otherClaims.has(snapshot.item_key)) {
+      await database.log(job.job_key, 'INFO', `Item ${snapshot.item_key} is actively claimed by another job ${otherClaims.get(snapshot.item_key)}; skipping listing restore`);
+      continue;
+    }
     const store=stores.find(s=>s.key===snapshot.store_key);
     if (!store) {
       await database.log(job.job_key,'WARN',`Store ${snapshot.store_key} not configured; skipping restore for SKU ${snapshot.sku}`);
@@ -163,15 +191,16 @@ export async function processCancellation(job, stores, deps={db,shopify,liveWrit
     }
     await api.restoreProductState(store,snapshot,`${job.job_key}|${snapshot.id || snapshot.item_key}`);
     await database.log(job.job_key,'OK',`Restored ${store.key} ${snapshot.sku}: status ${snapshot.previous_status}, removed ${snapshot.sold_tag}, restored inventory`);
+    restoredCount++;
   }
 
-  const itemKeys=[...new Set(snapshots.map(s=>s.item_key).filter(Boolean))];
+  // 4. Close reservation / release claim
   if (database.releaseClaims) {
     await database.releaseClaims(itemKeys);
     await database.log(job.job_key,'OK',`Released internal claims for: ${itemKeys.join(', ')}`);
   }
 
-  return {cancelled:true,restored:snapshots.length,orderId};
+  return {cancelled:true,restored:restoredCount,orderId};
 }
 
 export async function runQueue(stores, limit=3) {

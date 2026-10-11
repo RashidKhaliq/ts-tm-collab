@@ -7,7 +7,14 @@ function getPool() {
   if (!pool) {
     const url = process.env.DATABASE_URL || process.env.POSTGRES_URL;
     if (!url) throw new Error('DATABASE_URL or POSTGRES_URL missing. Neon database is required for webhook deduplication.');
-    pool = new Pool({ connectionString: url, max: 4, connectionTimeoutMillis: 10000, idleTimeoutMillis: 15000 });
+    const isSsl = url.includes('sslmode=require') || url.includes('neon.tech') || url.includes('ssl=true');
+    pool = new Pool({
+      connectionString: url,
+      max: 4,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 15000,
+      ssl: isSsl ? { rejectUnauthorized: false } : undefined
+    });
   }
   return pool;
 }
@@ -162,6 +169,23 @@ export async function getSnapshotsForOrder(orderId) {
 
 export async function lookupSupplierOrder(jobKey, ownerKey) {
   return (await query(`SELECT owner_order_gid FROM ts_supplier_orders WHERE job_key=$1 AND owner_key=$2`, [jobKey,ownerKey])).rows[0]?.owner_order_gid;
+}
+
+export async function getSupplierOrdersForJob(jobKey) {
+  const r = await query(`SELECT owner_key, owner_order_gid FROM ts_supplier_orders WHERE job_key=$1`, [jobKey]);
+  return r.rows;
+}
+
+export async function checkOtherClaims(itemKeys, currentJobKey) {
+  if (!itemKeys || !itemKeys.length) return new Map();
+  const r = await query(`SELECT item_key, job_key FROM ts_claims WHERE item_key = ANY($1::text[])`, [itemKeys]);
+  const others = new Map();
+  for (const row of r.rows) {
+    if (row.job_key !== currentJobKey) {
+      others.set(row.item_key, row.job_key);
+    }
+  }
+  return others;
 }
 
 export async function saveSupplierOrder(jobKey, ownerKey, gid) {
